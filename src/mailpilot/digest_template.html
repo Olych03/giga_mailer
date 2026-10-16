@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Почта · {{ title_date }}</title>
+<script>
+(function () {
+  try { var t = localStorage.getItem("mailpilot-theme"); if (t) document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+})();
+</script>
+<style>
+:root {
+  --bg: #f3f4f6; --card: #ffffff; --ink: #1f2328; --muted: #6b7280; --line: #e5e7eb; --soft: #f8f9fb;
+  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
+  --blue: #2563eb; --blue-bg: #eff4ff; --red: #dc2626; --red-bg: #fef2f2; --violet: #7c3aed; --violet-bg: #f5f3ff;
+  --green: #16a34a; --green-bg: #f0fdf4; --amber: #b45309; --amber-bg: #fffbeb; --neutral: #374151; --neutral-bg: #f3f4f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1115; --card: #181b21; --ink: #e5e7eb; --muted: #9ca3af; --line: #272b33; --soft: #1f232a;
+    --shadow: 0 1px 2px rgba(0,0,0,.4);
+    --blue: #60a5fa; --blue-bg: #172036; --red: #f87171; --red-bg: #2a1718; --violet: #a78bfa; --violet-bg: #211a33;
+    --green: #4ade80; --green-bg: #13251a; --amber: #fbbf24; --amber-bg: #2a2212; --neutral: #d1d5db; --neutral-bg: #23272e;
+  }
+}
+:root[data-theme="dark"] {
+    --bg: #0f1115; --card: #181b21; --ink: #e5e7eb; --muted: #9ca3af; --line: #272b33; --soft: #1f232a;
+    --shadow: 0 1px 2px rgba(0,0,0,.4);
+    --blue: #60a5fa; --blue-bg: #172036; --red: #f87171; --red-bg: #2a1718; --violet: #a78bfa; --violet-bg: #211a33;
+    --green: #4ade80; --green-bg: #13251a; --amber: #fbbf24; --amber-bg: #2a2212; --neutral: #d1d5db; --neutral-bg: #23272e;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 32px 20px 80px; }
+header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+header h1 { font-size: 24px; margin: 0; }
+.theme { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink); font: inherit; font-size: 13px;
+  cursor: pointer; box-shadow: var(--shadow); }
+.theme:hover { border-color: var(--muted); }
+header p { color: var(--muted); margin: 4px 0 0; }
+.note { margin-top: 16px; padding: 10px 14px; border-radius: 10px; background: var(--amber-bg); color: var(--amber); font-size: 14px; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin: 24px 0 8px; }
+.tile { display: block; text-decoration: none; color: inherit; background: var(--card); border-radius: 14px;
+  padding: 16px 18px; box-shadow: var(--shadow); border-top: 4px solid var(--c); transition: transform .12s, box-shadow .12s; }
+.tile:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(16,24,40,.12); }
+.tile .num { font-size: 34px; font-weight: 700; line-height: 1.1; color: var(--c); }
+.tile .name { font-weight: 600; margin-top: 4px; }
+.tile .hint { color: var(--muted); font-size: 13px; }
+.tile .go { color: var(--muted); font-size: 12px; margin-top: 8px; }
+.blue { --c: var(--blue); --cb: var(--blue-bg); } .red { --c: var(--red); --cb: var(--red-bg); }
+.violet { --c: var(--violet); --cb: var(--violet-bg); } .green { --c: var(--green); --cb: var(--green-bg); }
+.amber { --c: var(--amber); --cb: var(--amber-bg); } .neutral { --c: var(--neutral); --cb: var(--neutral-bg); }
+
+section { margin-top: 36px; scroll-margin-top: 16px; }
+h2 { font-size: 19px; margin: 0 0 12px; display: flex; align-items: center; gap: 10px; }
+details.sec > summary { color: var(--ink); list-style: none; cursor: pointer; user-select: none; border-radius: 10px; }
+details.sec > summary::-webkit-details-marker { display: none; }
+details.sec > summary h2 { margin: 0; padding: 4px 0; }
+details.sec[open] > summary { margin-bottom: 12px; }
+details.sec > summary:hover h2 { color: var(--c); }
+details.sec > summary:focus-visible { outline: 2px solid var(--c); outline-offset: 4px; }
+.chev { margin-left: auto; width: 30px; height: 30px; flex: none; border-radius: 999px; background: var(--card);
+  box-shadow: var(--shadow); display: inline-flex; align-items: center; justify-content: center; }
+.chev::before { content: ""; width: 8px; height: 8px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+  transform: translateY(-2px) rotate(45deg); transition: transform .15s; }
+details.sec[open] .chev::before { transform: translateY(2px) rotate(-135deg); }
+.sec-tools { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+h2 .count { font-size: 13px; font-weight: 600; color: var(--c); background: var(--cb); border-radius: 999px; padding: 1px 10px; }
+.empty { background: var(--card); border-radius: 14px; padding: 16px 18px; color: var(--muted); box-shadow: var(--shadow); }
+
+.card { background: var(--card); border-radius: 14px; padding: 16px 18px; margin-bottom: 12px; box-shadow: var(--shadow);
+  border-left: 4px solid var(--cat, var(--line)); scroll-margin-top: 16px; }
+.card.done { opacity: .7; }
+.card .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.card .subject { font-weight: 600; font-size: 16px; }
+.pill { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; white-space: nowrap; background: var(--cb); color: var(--c); }
+.meta { color: var(--muted); font-size: 13px; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.meta .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cat); display: inline-block; }
+.meta a { color: var(--blue); text-decoration: none; }
+.chip { font-size: 12px; font-weight: 600; color: var(--violet); background: var(--violet-bg); border-radius: 6px; padding: 1px 7px; }
+.summary { margin: 10px 0 0; }
+.callout { margin-top: 8px; padding: 8px 12px; border-radius: 10px; background: var(--cb); font-size: 14px; }
+.callout b { color: var(--c); }
+ul.todo { list-style: none; margin: 10px 0 0; padding: 0; }
+ul.todo li { padding-left: 22px; position: relative; margin: 3px 0; }
+ul.todo li::before { content: ""; position: absolute; left: 2px; top: 5px; width: 11px; height: 11px; border: 1.5px solid var(--muted); border-radius: 3px; }
+.foot { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-top: 12px; font-size: 13px; }
+.btn { display: inline-block; text-decoration: none; font-size: 13px; font-weight: 600; border-radius: 8px; padding: 5px 12px;
+  background: var(--green-bg); color: var(--green); border: 0; cursor: pointer; font-family: inherit; }
+.btn.ghost { background: var(--soft); color: var(--ink); font-weight: 500; }
+.btn.small { padding: 1px 8px; font-size: 12px; }
+details > summary { cursor: pointer; color: var(--blue); list-style: none; font-size: 13px; }
+details > summary::-webkit-details-marker { display: none; }
+.history { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13px; border-left: 2px solid var(--line); }
+.history li { padding: 3px 0 3px 12px; color: var(--muted); }
+.history b { color: var(--ink); font-weight: 600; }
+.quote { margin-top: 10px; padding: 12px 14px; background: var(--soft); border-radius: 10px; white-space: pre-wrap; }
+
+.days { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.day h3 { margin: 0 0 8px; font-size: 15px; display: flex; gap: 8px; align-items: center; }
+.ev { display: flex; gap: 12px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.ev:first-of-type { border-top: 0; }
+.ev .t { color: var(--muted); min-width: 92px; font-variant-numeric: tabular-nums; }
+.ev.clash .t { color: var(--red); font-weight: 600; }
+.ev .loc { color: var(--muted); font-size: 12.5px; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; align-items: start; }
+.grid .card { margin-bottom: 0; }
+.cat .n { font-size: 26px; font-weight: 700; color: var(--cat); }
+.cat .title { font-weight: 600; }
+.cat .line { color: var(--muted); font-size: 13px; }
+.list { margin-top: 8px; }
+.row { padding: 7px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.row .sub { color: var(--muted); font-size: 12.5px; }
+.row a { color: var(--blue); text-decoration: none; }
+footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
+@media (max-width: 560px) { .tiles { grid-template-columns: 1fr 1fr; } .tile .num { font-size: 28px; } }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div>
+    <h1>Почта{% if me %} · {{ me }}{% endif %}</h1>
+    <p>{{ title_date }} · период с {{ period_from }}</p>
+  </div>
+  <button type="button" class="theme" id="theme-toggle" aria-label="Переключить тему"></button>
+</header>
+{% if pending_analysis %}<div class="note">Ещё {{ pending_analysis }} переписок без разбора: суть и ответы появятся после запуска скилла mailpilot в gigacode.</div>{% endif %}
+
+<nav class="tiles">
+{% for t in tiles %}<a class="tile {{ t.tone }}" href="#{{ t.anchor }}">
+  <div class="num">{{ t.value }}</div><div class="name">{{ t.title }}</div><div class="hint">{{ t.hint }}</div><div class="go">подробнее ↓</div>
+</a>{% endfor %}
+</nav>
+<div class="sec-tools"><button type="button" class="btn ghost" data-sections="open">Развернуть все</button><button type="button" class="btn ghost" data-sections="close">Свернуть все</button></div>
+
+{% macro card(i) %}
+<div class="card{% if i.done %} done{% endif %}" id="{{ i.id }}" style="--cat: {{ i.color }}">
+  <div class="top"><div class="subject">{{ i.subject }}</div>
+    {% if i.status %}<span class="pill {{ i.status_tone }}">{{ i.status }}</span>{% endif %}</div>
+  <div class="meta"><span class="dot"></span>{{ i.meta }}{% for t in i.tags %}<span class="chip">{{ t }}</span>{% endfor %}</div>
+  {% if i.summary %}<p class="summary">{{ i.summary }}</p>{% endif %}
+  {% for a in i.alerts %}<div class="callout {{ a[2] }}"><b>{{ a[0] }}:</b> {{ a[1] }}</div>{% endfor %}
+  {% if i.actions %}<ul class="todo">{% for a in i.actions %}<li>{{ a }}</li>{% endfor %}</ul>{% endif %}
+  <div class="foot">
+    {% if i.draft %}<a class="btn" href="#draft-{{ i.draft.id }}">Ответ готов ↓</a>{% endif %}
+    <details><summary>История переписки</summary><ul class="history">
+      {% for e in i.timeline %}<li>{% if e.date %}{{ e.date }} · <b>{{ e.who }}</b>: {% endif %}{{ e.gist }}</li>{% endfor %}
+    </ul></details>
+  </div>
+</div>
+{% endmacro %}
+
+{% for sec in sections %}
+{% if sec == "vip" and vip %}
+<section id="vip" class="violet"><details class="sec"><summary><h2>{{ section_titles.vip }} <span class="count">{{ vip|length }}</span><span class="chev" aria-hidden="true"></span></h2></summary>
+  {% for i in vip %}{{ card(i) }}{% endfor %}</details></section>
+
+{% elif sec == "attention" %}
+<section id="attention" class="red"><details class="sec"><summary><h2>{{ section_titles.attention }} <span class="count">{{ attention|length }}</span><span class="chev" aria-hidden="true"></span></h2></summary>
+  {% for i in attention %}{{ card(i) }}{% else %}<div class="empty">Ничего не ждёт вашего действия.</div>{% endfor %}</details></section>
+
+{% elif sec == "drafts" and drafts %}
+<section id="drafts" class="green"><details class="sec"><summary><h2>{{ section_titles.drafts }} <span class="count">{{ drafts|length }}</span><span class="chev" aria-hidden="true"></span></h2></summary>
+  {% for d in drafts %}<div class="card" id="draft-{{ d.id }}" style="--cat: var(--green)">
+    <div class="top"><div class="subject">{{ d.subject }}</div><span class="pill green">ответ №{{ d.id }}</span></div>
+    <div class="meta">Кому: {{ d.to }}{% if d.reply_all %} и всем в переписке{% endif %} · <a href="#{{ d.thread_id }}">к переписке ↑</a></div>
+    <div class="quote">{{ d.text }}</div>
+    <div class="foot"><button class="btn" data-copy="mailpilot send {{ d.id }}">Скопировать команду отправки</button>
+      <button class="btn ghost" data-copy="mailpilot draft edit {{ d.id }}">Скопировать команду правки</button>
+      <span class="meta">или скажите агенту «отправь ответ {{ d.id }}»</span></div>
+  </div>{% endfor %}</details></section>
+
+{% elif sec == "calendar" %}
+<section id="calendar" class="blue"><details class="sec"><summary><h2>{{ section_titles.calendar }}<span class="chev" aria-hidden="true"></span></h2></summary>
+  <div class="days">{% for d in agenda %}<div class="card day" style="--cat: var(--blue)">
+    <h3>{{ d.label }}{% if d.conflicts %}<span class="pill red">пересечения</span>{% endif %}</h3>
+    {% for e in d.events %}<div class="ev{% if e.conflict %} clash{% endif %}"><span class="t">{{ e.time }}–{{ e.end }}</span>
+      <span>{{ e.subject }}{% if e.location %}<br><span class="loc">{{ e.location }}</span>{% endif %}</span></div>
+    {% else %}<div class="ev"><span class="t">—</span><span class="loc">встреч нет</span></div>{% endfor %}
+  </div>{% endfor %}</div></details></section>
+
+{% elif sec == "new" %}
+<section id="new" class="blue"><details class="sec"><summary><h2>{{ section_titles.new }}<span class="chev" aria-hidden="true"></span></h2></summary>
+  <div class="grid">{% for g in overview %}<div class="card cat" id="cat-{{ g.id }}" style="--cat: {{ g.color }}">
+    <div class="top"><div><div class="title">{{ g.title }}</div><div class="line">{{ g.line }}</div></div><div class="n">{{ g.count }}</div></div>
+    <details class="list"><summary>Показать</summary>
+    {% if g.kind == "threads" %}{% for i in g.entries %}<div class="row"><a href="#{{ i.id }}">{{ i.subject }}</a>{% if i.status %} <span class="sub">· {{ i.status }}</span>{% endif %}<div class="sub">{{ i.summary }}</div></div>{% endfor %}
+    {% elif g.kind == "jira" %}{% for t in g.entries %}<div class="row">{% if t.url %}<a href="{{ t.url }}">{{ t.key }}</a>{% else %}<b>{{ t.key }}</b>{% endif %} {{ t.title }}<div class="sub">{{ t.actions|join(", ") or "обновление" }}{% if t.people %} · {{ t.people|join(", ") }}{% endif %}</div></div>{% endfor %}
+    {% elif g.kind == "confluence" %}{% for sp in g.entries %}{% for pg in sp.pages %}<div class="row">{% if pg.url %}<a href="{{ pg.url }}">{{ pg.page }}</a>{% else %}{{ pg.page }}{% endif %}<div class="sub">{{ sp.space }} · {{ pg.people|join(", ") }}{% if pg.count > 1 %} · правок: {{ pg.count }}{% endif %}{% if pg.commented %} · есть комментарии{% endif %}</div></div>{% endfor %}{% endfor %}
+    {% else %}{% for x in g.entries %}<div class="row">{{ x.sender }} <span class="sub">· {{ x.count }}</span>
+      <button class="btn ghost small" data-copy='mailpilot mute --from "{{ x.addr }}"' title="Скопировать команду, которая скроет отправителя">скрыть</button>
+      <div class="sub">{{ x.subjects|join(" · ") }}</div></div>{% endfor %}{% endif %}
+    </details>
+  </div>{% endfor %}</div></details></section>
+{% endif %}
+{% endfor %}
+
+<footer>{% if hidden_count %}Скрыто настройками: {{ hidden_count }}. {% endif %}Карточки сверху и важность категорий настраиваются в config.yaml или словами агенту.</footer>
+</main>
+<script>
+(function () {
+  var root = document.documentElement, btn = document.getElementById("theme-toggle");
+  var dark = function () {
+    var t = root.getAttribute("data-theme");
+    return t ? t === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+  };
+  var label = function () { btn.textContent = dark() ? "☀ Светлая тема" : "☾ Тёмная тема"; };
+  btn.addEventListener("click", function () {
+    var t = dark() ? "light" : "dark";
+    root.setAttribute("data-theme", t);
+    try { localStorage.setItem("mailpilot-theme", t); } catch (e) {}
+    label();
+  });
+  label();
+})();
+(function () {
+  // Разделы свёрнуты; ссылка на карточку внутри раздела раскрывает его и прокручивает к ней.
+  var reveal = function (id) {
+    var el = id && document.getElementById(id);
+    if (!el) return false;
+    for (var d = el.closest("details"); d; d = d.parentElement.closest("details")) d.open = true;
+    var own = el.querySelector(":scope > details.sec");
+    if (own) own.open = true;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    return true;
+  };
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest("button[data-sections]");
+    if (t) {
+      var open = t.getAttribute("data-sections") === "open";
+      document.querySelectorAll("details.sec").forEach(function (d) { d.open = open; });
+      return;
+    }
+    var a = e.target.closest('a[href^="#"]');
+    if (a && reveal(decodeURIComponent(a.getAttribute("href").slice(1)))) {
+      e.preventDefault();
+      history.replaceState(null, "", a.getAttribute("href"));
+    }
+  });
+  if (location.hash) reveal(decodeURIComponent(location.hash.slice(1)));
+})();
+document.addEventListener("click", function (e) {
+  var b = e.target.closest("button[data-copy]");
+  if (!b) return;
+  var text = b.getAttribute("data-copy"), label = b.textContent;
+  var done = function () { b.textContent = "Скопировано"; setTimeout(function () { b.textContent = label; }, 1200); };
+  if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).then(done); return; }
+  var ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select();
+  try { document.execCommand("copy"); done(); } catch (err) {} document.body.removeChild(ta);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,162 @@
+# Настройки mailpilot. Скопируйте в config.yaml (это делает `mailpilot init`) и поправьте под себя.
+# config.yaml и .env в git не попадают.
+
+# Откуда брать почту: mcp — настоящая почта через mcp-mail-server, demo — выдуманные письма для проверки
+source: mcp
+
+# Папка для базы, сводок и пакетов на анализ (относительно этого файла)
+data_dir: data
+
+me:
+  name: "Иванова Ольга"
+  # Все ваши адреса: по ним инструмент понимает, какие письма в цепочке ваши
+  addresses: ["o.ivanova@example.com"]
+  # Слова, по которым видно, что проблема на вашей стороне: название вашей системы, команды, модуля
+  my_side_keywords: ["Система Альфа", "команда Альфа"]
+
+# Как запускать mcp-mail-server. Те же параметры, что у вас уже работают.
+mcp:
+  command: npx
+  args: ["-y", "mcp-mail-server"]
+  env:
+    IMAP_HOST: imap.example.com
+    IMAP_PORT: "993"
+    IMAP_SECURE: "true"
+    SMTP_HOST: smtp.example.com
+    SMTP_PORT: "465"
+    SMTP_SECURE: "true"
+    EMAIL_USER: o.ivanova@example.com
+    # Пароль сюда не пишите. Положите его в файл .env рядом с конфигом: EMAIL_PASS=...
+
+mailboxes:
+  inbox: INBOX
+  # Имя папки «Отправленные». null — сервер найдёт её сам. Точные имена папок покажет `mailpilot doctor`
+  sent: null
+  # Дополнительные папки, если правила Outlook раскладывают почту по ним
+  extra: []
+
+fetch:
+  # Сколько часов назад забрать почту при самом первом запуске
+  initial_hours: 24
+  # Сколько писем запрашивать за один вызов
+  batch_size: 20
+
+digest:
+  # Важные люди: их письма всегда показываются в самом верху сводки.
+  # Можно писать «Имя Фамилия», «Фамилия» или адрес. Фамилия ищется и латиницей в адресе.
+  vip_senders: ["Виктор Громов"]
+  # Карточки-счётчики вверху сводки, по клику переход к разделу.
+  # type: new (все новые письма), attention (требуют внимания), vip (от важных людей), drafts (готовые ответы),
+  #       escalations, incidents, calendar, category (письма одной категории, укажите category: id).
+  # title — своё название, tone — цвет: blue, red, violet, green, amber, neutral.
+  tiles:
+    - {type: new, title: "Новые письма"}
+    - {type: attention, title: "Требуют внимания"}
+    - {type: vip, title: "От руководства"}
+    - {type: drafts, title: "Ответы готовы"}
+    # - {type: category, category: prom, title: "ПРОМ", tone: red}
+  # Цепочки, где ждут вашего ответа, показываются в сводке ещё столько дней
+  carry_over_days: 5
+  # Открывать сводку в браузере после сборки
+  open_after_render: false
+
+analysis:
+  # Сколько цепочек класть в один пакет для агента
+  batch_threads: 8
+  # Ограничение длины одного письма в пакете (символов)
+  max_message_chars: 2500
+  # Сколько последних писем цепочки передавать целиком (старые идут одной строкой)
+  max_full_messages: 10
+  # Сколько ваших прошлых ответов подкладывать как образцы для черновика
+  examples_per_thread: 3
+
+calendar:
+  # auto: на Windows читать из десктопного Outlook, иначе из писем-приглашений
+  # outlook | ics_mail | none
+  source: auto
+
+# Номер инцидента. Если он есть в теме или тексте, цепочка помечается как инцидент
+incident_regex: '\bINC\d{4,}\b'
+
+escalation:
+  # Слова в тексте писем, которые означают эскалацию
+  keywords: ["до сих пор не", "срочно"]
+  # Фамилии руководителей: если они в адресатах, это эскалация. Можно писать кириллицей:
+  # mcp-mail-server отдаёт только адреса без имён, поэтому фамилия ищется и латиницей в адресе
+  # (Белоусова найдётся в belousova@... и AABelousova@...). Можно указать и адрес целиком.
+  people: ["Петров", "Сидорова"]
+  # Цепочка такой длины без вашего ответа тоже считается тревожной
+  long_thread_messages: 6
+
+# Подпись, которая добавляется к отправляемым ответам. Пусто — без подписи
+signature: ""
+
+# Категории проверяются сверху вниз, письмо попадает в первую подходящую.
+# Так каждый настраивает сводку под себя: кому-то важнее ПРОМ, кому-то переписка с юристами.
+# importance: high — в «Требует внимания» первыми, normal — в «Требует внимания» после high,
+#   low — только в свёрнутом блоке «Остальное», hidden — не показывать (только счётчик внизу).
+# analyze: true — цепочки отдаются агенту на смысловой анализ. drafts: true — агент может предложить черновик.
+# extractor: jira | confluence — особая обработка уведомлений (список задач или изменённых страниц).
+# Условия match: элементы списка соединяются через ИЛИ, ключи внутри одного элемента через И.
+#   recipients_contain — адрес или имя в Кому/Копии; from_contains; from_regex; subject_contains; subject_regex; body_regex
+categories:
+  - id: prom
+    title: Обращения с ПРОМ
+    importance: high
+    analyze: true
+    drafts: true
+    color: "#d64545"
+    match:
+      - recipients_contain: ["prom-support@example.com"]
+
+  - id: jira
+    title: Jira
+    importance: low
+    extractor: jira
+    color: "#2f6fd6"
+    match:
+      - from_contains: ["jira"]
+      - subject_regex: '^\s*\[JIRA\]'
+
+  - id: confluence
+    title: Confluence
+    importance: normal
+    extractor: confluence
+    color: "#1f9d8a"
+    match:
+      - from_contains: ["confluence"]
+      - subject_regex: '^\s*\[Confluence\]'
+
+  # Приглашения на встречи: сами встречи показываются в блоке «Календарь»
+  - id: invites
+    title: Приглашения на встречи
+    importance: hidden
+    color: "#3b5bdb"
+    match:
+      - subject_regex: '^\s*(Приглашение|Обновленное приглашение|Обновлённое приглашение|Отменено|Принято|Отклонено|Под вопросом|Invitation|Updated invitation|Canceled|Accepted|Declined|Tentative)\s*:'
+
+  - id: notifications
+    title: Служебные уведомления
+    importance: low
+    color: "#8a8f98"
+    match:
+      - from_regex: '(no-?reply|noreply|notification|monitoring|alert|robot|daemon)'
+
+  # Пример своей категории: переписка с юристами. Раскомментируйте и впишите адреса или фамилии.
+  # - id: legal
+  #   title: Юристы
+  #   importance: high
+  #   analyze: true
+  #   drafts: true
+  #   match:
+  #     - from_contains: ["legal@example.com", "yurist"]
+  #     - recipients_contain: ["legal@example.com"]
+
+  # Категория по умолчанию: всё, что не подошло выше
+  - id: routine
+    title: Текучка
+    importance: normal
+    analyze: true
+    drafts: true
+    default: true
+    color: "#c98a1b"
