@@ -7,6 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from . import feedback as fb
 from .analysis import analysis_status, days_ago, thread_timeline
 from .calendar_src import agenda_window, find_conflicts
 from .config import Config
@@ -36,8 +37,38 @@ def pretty_person(cfg: Config, raw: str) -> str:
     return known or display_name(raw)
 
 
+def _why(cat: Any, flags: dict[str, Any], state: dict[str, Any], label: str | None) -> list[str]:
+    """Почему переписка попала наверх: по этим причинам удобно понять, что сработало зря."""
+    why = []
+    if label == "important":
+        why.append("вы отметили как важное")
+    if flags.get("vip"):
+        why.append(f"пишет {flags['vip']}")
+    if flags.get("my_turn"):
+        why.append("ждут вашего ответа")
+    elif state.get("needs_me"):
+        why.append("агент считает, что нужно ваше действие")
+    if flags.get("escalation_keywords"):
+        why.append("в тексте " + ", ".join(f"«{k}»" for k in flags["escalation_keywords"]))
+    if flags.get("escalation_people"):
+        why.append("в адресатах " + ", ".join(flags["escalation_people"]))
+    if flags.get("incidents"):
+        why.append("инцидент " + ", ".join(flags["incidents"][:3]))
+    if flags.get("my_side_keywords"):
+        why.append("упоминают " + ", ".join(flags["my_side_keywords"]))
+    if state.get("conflict"):
+        why.append("агент видит конфликт")
+    if state.get("join_recommended"):
+        why.append("агент советует подключиться")
+    if flags.get("long_thread"):
+        why.append("длинная переписка без вашего ответа")
+    if cat and cat.importance == "high":
+        why.append(f"категория «{cat.title}» отмечена как важная")
+    return why
+
+
 def _thread_item(cfg: Config, store: Store, t: dict[str, Any], period_from: str,
-                 drafts_by_thread: dict[str, dict[str, Any]]) -> dict[str, Any]:
+                 drafts_by_thread: dict[str, dict[str, Any]], label: str | None = None) -> dict[str, Any]:
     flags = t.get("flags") or {}
     state = t.get("state") or {}
     cat = cfg.category(t["category"])
@@ -98,7 +129,9 @@ def _thread_item(cfg: Config, store: Store, t: dict[str, Any], period_from: str,
         "escalation": bool(flags.get("escalation") or state.get("conflict")),
         "vip": flags.get("vip"),
         "needs_me": needs_me,
-        "attention": not done and (needs_me or bool(alerts)),
+        "attention": not done and label != "not_important" and (needs_me or bool(alerts) or label == "important"),
+        "label": label,
+        "why": _why(cat, flags, state, label),
         "done": done,
         "last_iso": t["last_date"],
         "timeline": timeline,
@@ -123,6 +156,7 @@ def build_digest(cfg: Config, store: Store, period_from: str, period_to: str) ->
     incoming = [m for m in msgs if not m.get("is_mine")]
     carry_since = iso(parse_dt(period_to) - timedelta(days=int(cfg.get("digest.carry_over_days") or 5)))
     drafts_by_thread = {d["thread_id"]: d for d in store.drafts(("proposed",))}
+    user_labels = fb.labels(store)
 
     # Цепочки: активные за период плюс более старые, где всё ещё ждут вас
     items = []
@@ -133,16 +167,18 @@ def build_digest(cfg: Config, store: Store, period_from: str, period_to: str) ->
         flags, state = t.get("flags") or {}, t.get("state") or {}
         pending = (flags.get("my_turn") or state.get("needs_me")) and (state.get("status") or "") not in STATUS_DONE
         if t["last_date"] >= period_from or pending:
-            items.append(_thread_item(cfg, store, t, period_from, drafts_by_thread))
+            items.append(_thread_item(cfg, store, t, period_from, drafts_by_thread, user_labels.get(t["id"])))
 
     # 1. Важные люди — всегда первыми
-    vip = [i for i in items if i["vip"] and not i["done"]]
+    vip = [i for i in items if i["vip"] and not i["done"] and i["label"] != "not_important"]
     vip.sort(key=lambda i: i["last_iso"], reverse=True)
     # 2. Требует внимания — в порядке важности категорий, затем эскалации и срочности
     rank = {"high": 0, "normal": 1, "low": 2}
-    attention = [i for i in items if i not in vip and i["attention"] and i["importance"] in ("high", "normal")]
+    # Ваши отметки сильнее правил: «важно» поднимает переписку, «не важно» убирает её отсюда
+    attention = [i for i in items if i not in vip and i["attention"]
+                 and (i["importance"] in ("high", "normal") or i["label"] == "important")]
     attention.sort(key=lambda i: i["last_iso"], reverse=True)
-    attention.sort(key=lambda i: (rank[i["importance"]], i["priority"], not i["escalation"]))
+    attention.sort(key=lambda i: (i["label"] != "important", rank.get(i["importance"], 2), i["priority"], not i["escalation"]))
 
     # 3. Все новые письма по категориям (обзор)
     overview = []
@@ -185,9 +221,13 @@ def build_digest(cfg: Config, store: Store, period_from: str, period_to: str) ->
     for d in store.drafts(("proposed",)):
         target = store.message(d["reply_to_id"]) or {}
         t = store.thread(d["thread_id"]) or {}
+        me = set(cfg.my_addresses)
+        copy = [pretty_person(cfg, a) for _, a in parse_addresses(f"{target.get('to_raw') or ''}, {target.get('cc_raw') or ''}")
+                if a and a not in me] if d["reply_all"] else []
         drafts.append({"id": d["id"], "thread_id": d["thread_id"], "subject": t.get("subject") or target.get("subject"),
                        "to": pretty_person(cfg, target.get("from_raw") or ""), "reply_all": bool(d["reply_all"]),
-                       "text": d.get("text_final") or d["text_proposed"]})
+                       "cc": copy, "text": d.get("text_final") or d["text_proposed"],
+                       "signature": (cfg.get("signature") or "").strip()})
 
     # Календарь
     agenda = []
@@ -246,6 +286,10 @@ def build_digest(cfg: Config, store: Store, period_from: str, period_to: str) ->
         "agenda": agenda,
         "hidden_count": plural(hidden_count, "письмо", "письма", "писем") if hidden_count else None,
         "pending_analysis": status["threads_waiting"],
+        "marked_unimportant": sum(1 for i in items if i["label"] == "not_important"),
+        "suggestions": fb.suggestions(cfg, store),
+        "interactive": False,
+        "token": "",
     }
 
 
@@ -275,6 +319,26 @@ def write_digest(cfg: Config, store: Store, period_from: str, period_to: str, op
     latest.write_text(html, encoding="utf-8")
     if open_browser or cfg.get("digest.open_after_render"):
         webbrowser.open(path.resolve().as_uri())
+    return path
+
+
+def current_period(cfg: Config, store: Store) -> tuple[str, str]:
+    """Период последней сводки; если сводок ещё не было — с прошлого запуска до сейчас."""
+    last = store.last_run("digest")
+    if last and last.get("period_from") and last.get("period_to"):
+        return last["period_from"], last["period_to"]
+    return new_period(cfg, store)
+
+
+def rerender(cfg: Config, store: Store, open_browser: bool = False) -> Path:
+    """Пересобрать файл последней сводки (после ваших отметок, правок и отправки)."""
+    last = store.last_run("digest")
+    if last:
+        return write_digest(cfg, store, last["period_from"], last["period_to"], open_browser)
+    period_from, period_to = new_period(cfg, store)
+    path = write_digest(cfg, store, period_from, period_to, open_browser)
+    store.add_run("digest", iso(now_utc()), period_from, period_to, str(path))
+    store.commit()
     return path
 
 

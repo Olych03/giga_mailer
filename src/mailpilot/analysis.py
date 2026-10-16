@@ -12,6 +12,7 @@ import shutil
 from datetime import timedelta
 from typing import Any
 
+from . import feedback as fb
 from .config import Config
 from .learn import similar_examples
 from .store import Store
@@ -77,6 +78,11 @@ def prepare(cfg: Config, store: Store) -> list[str]:
     per_batch = int(cfg.get("analysis.batch_threads") or 8)
     k_examples = int(cfg.get("analysis.examples_per_thread") or 3)
     style = cfg.style_path.read_text(encoding="utf-8") if cfg.style_path.exists() else None
+    preferences = fb.read_preferences(cfg)
+    decisions = fb.decisions_for_agent(store)
+
+    user_labels = fb.labels(store)
+    no_drafts_from = [a.lower() for a in cfg.get("analysis.no_drafts_from") or []]
 
     entries = []
     for t in threads_to_analyze(cfg, store):
@@ -92,8 +98,17 @@ def prepare(cfg: Config, store: Store) -> list[str]:
             e = _msg_entry(m, full, max_chars)
             e["new"] = bool(is_new)
             items.append(e)
-        allow_draft = bool(cat and cat.drafts and flags.get("my_turn"))
         last_incoming = next((m for m in reversed(msgs) if not m.get("is_mine")), None)
+        label = user_labels.get(t["id"])
+        allow_draft = bool(cat and cat.drafts and flags.get("my_turn")) and label != "not_important"
+        # «Ответ не нужен» действует, пока в переписке не появится новое письмо
+        no_reply_at = fb.no_reply_since(store, t["id"])
+        if allow_draft and no_reply_at and last_incoming \
+                and (last_incoming.get("fetched_at") or last_incoming["date"]) <= no_reply_at:
+            allow_draft = False
+        sender = ((last_incoming or {}).get("from_addr") or "").lower()
+        if allow_draft and sender and any(a in sender for a in no_drafts_from):
+            allow_draft = False
         entry = {
             "thread_id": t["id"],
             "category": cat.title if cat else t["category"],
@@ -109,6 +124,7 @@ def prepare(cfg: Config, store: Store) -> list[str]:
                 "my_turn": flags.get("my_turn"),
                 "unanswered_messages": flags.get("unanswered_count"),
             },
+            "my_label": fb.KIND_TITLES.get(label) if label else None,
             "previous_state": state,
             "messages": items,
             "allow_draft": allow_draft,
@@ -132,6 +148,8 @@ def prepare(cfg: Config, store: Store) -> list[str]:
             "result_file": str(work / f"result_{n:02d}.json"),
             "me": me,
             "style_profile": style,
+            "my_preferences": preferences,
+            "my_recent_decisions": decisions,
             "result_schema": RESULT_SCHEMA,
             "threads": entries[i : i + per_batch],
         }

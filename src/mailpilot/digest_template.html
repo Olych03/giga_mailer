@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Почта · {{ title_date }}</title>
+{% if interactive %}<meta name="mp-token" content="{{ token }}">{% endif %}
 <script>
 (function () {
   try { var t = localStorage.getItem("mailpilot-theme"); if (t) document.documentElement.setAttribute("data-theme", t); } catch (e) {}
@@ -31,6 +32,7 @@
     --green: #4ade80; --green-bg: #13251a; --amber: #fbbf24; --amber-bg: #2a2212; --neutral: #d1d5db; --neutral-bg: #23272e;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { scroll-behavior: smooth; }
 body { margin: 0; background: var(--bg); color: var(--ink);
   font: 15px/1.5 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
@@ -118,6 +120,39 @@ details > summary::-webkit-details-marker { display: none; }
 .row { padding: 7px 0; border-top: 1px solid var(--line); font-size: 14px; }
 .row .sub { color: var(--muted); font-size: 12.5px; }
 .row a { color: var(--blue); text-decoration: none; }
+.why { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+.card.lbl-not_important { opacity: .55; }
+.card.lbl-not_important:hover { opacity: .85; }
+.marks { display: inline-flex; gap: 6px; margin-left: auto; }
+.mk { background: var(--soft); color: var(--muted); font-weight: 500; }
+.mk[data-label="important"].on { background: var(--green-bg); color: var(--green); font-weight: 600; }
+.mk[data-label="not_important"].on { background: var(--neutral-bg); color: var(--ink); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line); }
+.reason { display: flex; gap: 8px; margin-top: 10px; }
+.reason[hidden] { display: none; }
+.reason input, .draft-edit { flex: 1; font: inherit; font-size: 14px; color: var(--ink); background: var(--soft);
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.draft-edit { width: 100%; min-height: 140px; margin-top: 10px; resize: vertical; line-height: 1.5; }
+.btn.danger { background: var(--red-bg); color: var(--red); }
+.row .marks { margin-left: 6px; }
+.row .mk { padding: 0 7px; font-size: 11.5px; }
+.flag { font-size: 11.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; }
+.sug { background: var(--card); border-radius: 14px; padding: 14px 18px; margin-top: 18px; box-shadow: var(--shadow);
+  border-left: 4px solid var(--violet); }
+.sug h3 { margin: 0 0 6px; font-size: 15px; }
+.sug .item { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.sug .item:first-of-type { border-top: 0; }
+.sug .item .txt { flex: 1 1 320px; }
+.sug .sub { color: var(--muted); font-size: 12.5px; }
+dialog { border: 0; border-radius: 14px; padding: 20px 22px; max-width: 640px; width: calc(100% - 32px);
+  background: var(--card); color: var(--ink); box-shadow: 0 20px 50px rgba(0,0,0,.35); }
+dialog::backdrop { background: rgba(15,17,21,.55); }
+dialog h3 { margin: 0 0 8px; }
+dialog .quote { max-height: 45vh; overflow: auto; }
+dialog .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: var(--bg);
+  padding: 10px 16px; border-radius: 10px; font-size: 14px; box-shadow: var(--shadow); z-index: 10; max-width: calc(100% - 32px); }
+.toast.err { background: var(--red); color: #fff; }
+.toast[hidden] { display: none; }
 footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
 @media (max-width: 560px) { .tiles { grid-template-columns: 1fr 1fr; } .tile .num { font-size: 28px; } }
 </style>
@@ -138,22 +173,38 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
   <div class="num">{{ t.value }}</div><div class="name">{{ t.title }}</div><div class="hint">{{ t.hint }}</div><div class="go">подробнее ↓</div>
 </a>{% endfor %}
 </nav>
+{% if suggestions %}<div class="sug" id="suggestions">
+  <h3>Предложения по вашим отметкам</h3>
+  {% for x in suggestions %}<div class="item" data-sug="{{ x.id }}"><div class="txt">{{ x.text }}?
+    <div class="sub">Вы отметили так {{ x.times }}{% if x.examples %}: {{ x.examples[:2]|join("; ") }}{% endif %}</div></div>
+    {% if interactive %}<button class="btn" data-sug-act="apply">Применить</button><button class="btn ghost" data-sug-act="dismiss">Не надо</button>
+    {% else %}<button class="btn ghost small" data-copy="mailpilot suggestions apply {{ x.n }}">Скопировать команду</button>{% endif %}
+  </div>{% endfor %}
+</div>{% endif %}
 <div class="sec-tools"><button type="button" class="btn ghost" data-sections="open">Развернуть все</button><button type="button" class="btn ghost" data-sections="close">Свернуть все</button></div>
 
+{% macro marks(i) %}<span class="marks" data-thread="{{ i.id }}">
+  <button class="btn small mk{% if i.label == 'important' %} on{% endif %}" data-label="important" title="Это важно: поднимать такие письма">Важно</button>
+  <button class="btn small mk{% if i.label == 'not_important' %} on{% endif %}" data-label="not_important" title="Это не важно: не поднимать такие письма">Не важно</button>
+</span>{% endmacro %}
+
 {% macro card(i) %}
-<div class="card{% if i.done %} done{% endif %}" id="{{ i.id }}" style="--cat: {{ i.color }}">
+<div class="card{% if i.done %} done{% endif %}{% if i.label %} lbl-{{ i.label }}{% endif %}" id="{{ i.id }}" data-thread="{{ i.id }}" style="--cat: {{ i.color }}">
   <div class="top"><div class="subject">{{ i.subject }}</div>
     {% if i.status %}<span class="pill {{ i.status_tone }}">{{ i.status }}</span>{% endif %}</div>
   <div class="meta"><span class="dot"></span>{{ i.meta }}{% for t in i.tags %}<span class="chip">{{ t }}</span>{% endfor %}</div>
   {% if i.summary %}<p class="summary">{{ i.summary }}</p>{% endif %}
   {% for a in i.alerts %}<div class="callout {{ a[2] }}"><b>{{ a[0] }}:</b> {{ a[1] }}</div>{% endfor %}
   {% if i.actions %}<ul class="todo">{% for a in i.actions %}<li>{{ a }}</li>{% endfor %}</ul>{% endif %}
+  {% if i.why %}<div class="why">Почему здесь: {{ i.why|join("; ") }}</div>{% endif %}
   <div class="foot">
     {% if i.draft %}<a class="btn" href="#draft-{{ i.draft.id }}">Ответ готов ↓</a>{% endif %}
     <details><summary>История переписки</summary><ul class="history">
       {% for e in i.timeline %}<li>{% if e.date %}{{ e.date }} · <b>{{ e.who }}</b>: {% endif %}{{ e.gist }}</li>{% endfor %}
     </ul></details>
+    {% if interactive %}{{ marks(i) }}{% endif %}
   </div>
+  {% if interactive %}<div class="reason" hidden><input type="text" maxlength="300" placeholder="Почему? Агент учтёт это в следующий раз (необязательно)"><button class="btn ghost" data-save-reason>Сохранить</button></div>{% endif %}
 </div>
 {% endmacro %}
 
@@ -168,13 +219,21 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
 
 {% elif sec == "drafts" and drafts %}
 <section id="drafts" class="green"><details class="sec"><summary><h2>{{ section_titles.drafts }} <span class="count">{{ drafts|length }}</span><span class="chev" aria-hidden="true"></span></h2></summary>
-  {% for d in drafts %}<div class="card" id="draft-{{ d.id }}" style="--cat: var(--green)">
+  {% for d in drafts %}<div class="card draft" id="draft-{{ d.id }}" data-draft="{{ d.id }}" data-thread="{{ d.thread_id }}"
+      data-to="{{ d.to }}" data-copy-list="{{ d.cc|join(', ') }}" data-subject="{{ d.subject }}" data-signature="{{ d.signature }}" style="--cat: var(--green)">
     <div class="top"><div class="subject">{{ d.subject }}</div><span class="pill green">ответ №{{ d.id }}</span></div>
     <div class="meta">Кому: {{ d.to }}{% if d.reply_all %} и всем в переписке{% endif %} · <a href="#{{ d.thread_id }}">к переписке ↑</a></div>
     <div class="quote">{{ d.text }}</div>
-    <div class="foot"><button class="btn" data-copy="mailpilot send {{ d.id }}">Скопировать команду отправки</button>
+    {% if interactive %}<textarea class="draft-edit" hidden>{{ d.text }}</textarea>
+    <div class="foot"><button class="btn" data-draft-act="send">Отправить…</button>
+      <button class="btn ghost" data-draft-act="edit">Править</button>
+      <button class="btn ghost" data-draft-act="save" hidden>Сохранить текст</button>
+      <button class="btn ghost" data-draft-act="no_reply" title="Запомнить, что на такие письма отвечать не нужно">Ответ не нужен</button>
+      <button class="btn ghost" data-draft-act="reject" title="Убрать этот вариант ответа">Отклонить</button></div>
+    <div class="reason" hidden><input type="text" maxlength="300" placeholder="Почему ответ не нужен? Агент учтёт (необязательно)"><button class="btn ghost" data-save-reason data-kind="no_reply">Сохранить</button></div>
+    {% else %}<div class="foot"><button class="btn" data-copy="mailpilot send {{ d.id }}">Скопировать команду отправки</button>
       <button class="btn ghost" data-copy="mailpilot draft edit {{ d.id }}">Скопировать команду правки</button>
-      <span class="meta">или скажите агенту «отправь ответ {{ d.id }}»</span></div>
+      <span class="meta">или откройте сводку с кнопками: mailpilot serve</span></div>{% endif %}
   </div>{% endfor %}</details></section>
 
 {% elif sec == "calendar" %}
@@ -191,7 +250,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
   <div class="grid">{% for g in overview %}<div class="card cat" id="cat-{{ g.id }}" style="--cat: {{ g.color }}">
     <div class="top"><div><div class="title">{{ g.title }}</div><div class="line">{{ g.line }}</div></div><div class="n">{{ g.count }}</div></div>
     <details class="list"><summary>Показать</summary>
-    {% if g.kind == "threads" %}{% for i in g.entries %}<div class="row"><a href="#{{ i.id }}">{{ i.subject }}</a>{% if i.status %} <span class="sub">· {{ i.status }}</span>{% endif %}<div class="sub">{{ i.summary }}</div></div>{% endfor %}
+    {% if g.kind == "threads" %}{% for i in g.entries %}<div class="row" data-thread="{{ i.id }}"><a href="#{{ i.id }}">{{ i.subject }}</a>{% if i.status %} <span class="sub">· {{ i.status }}</span>{% endif %}{% if i.label == 'not_important' and not interactive %} <span class="flag">не важно</span>{% endif %}{% if interactive %}{{ marks(i) }}{% endif %}<div class="sub">{{ i.summary }}</div></div>{% endfor %}
     {% elif g.kind == "jira" %}{% for t in g.entries %}<div class="row">{% if t.url %}<a href="{{ t.url }}">{{ t.key }}</a>{% else %}<b>{{ t.key }}</b>{% endif %} {{ t.title }}<div class="sub">{{ t.actions|join(", ") or "обновление" }}{% if t.people %} · {{ t.people|join(", ") }}{% endif %}</div></div>{% endfor %}
     {% elif g.kind == "confluence" %}{% for sp in g.entries %}{% for pg in sp.pages %}<div class="row">{% if pg.url %}<a href="{{ pg.url }}">{{ pg.page }}</a>{% else %}{{ pg.page }}{% endif %}<div class="sub">{{ sp.space }} · {{ pg.people|join(", ") }}{% if pg.count > 1 %} · правок: {{ pg.count }}{% endif %}{% if pg.commented %} · есть комментарии{% endif %}</div></div>{% endfor %}{% endfor %}
     {% else %}{% for x in g.entries %}<div class="row">{{ x.sender }} <span class="sub">· {{ x.count }}</span>
@@ -202,7 +261,15 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
 {% endif %}
 {% endfor %}
 
-<footer>{% if hidden_count %}Скрыто настройками: {{ hidden_count }}. {% endif %}Карточки сверху и важность категорий настраиваются в config.yaml или словами агенту.</footer>
+{% if interactive %}<dialog id="send-dlg">
+  <h3>Отправить ответ?</h3>
+  <div class="meta" id="send-to"></div>
+  <div class="quote" id="send-text"></div>
+  <div class="acts"><button class="btn ghost" value="cancel" id="send-cancel">Отмена</button><button class="btn" id="send-ok">Отправить</button></div>
+</dialog>
+<div class="toast" id="toast" hidden></div>{% endif %}
+
+<footer>{% if marked_unimportant %}Отмечено вами как неважное: {{ marked_unimportant }}. {% endif %}{% if hidden_count %}Скрыто настройками: {{ hidden_count }}. {% endif %}{% if not interactive %}Чтобы отмечать письма и править ответы прямо здесь, откройте сводку командой <code>mailpilot serve</code>. {% endif %}Карточки сверху и важность категорий настраиваются в config.yaml или словами агенту.</footer>
 </main>
 <script>
 (function () {
@@ -256,5 +323,136 @@ document.addEventListener("click", function (e) {
   try { document.execCommand("copy"); done(); } catch (err) {} document.body.removeChild(ta);
 });
 </script>
+{% if interactive %}
+<script>
+(function () {
+  var token = document.querySelector('meta[name="mp-token"]').content;
+  var toastEl = document.getElementById("toast"), toastTimer;
+  function toast(text, err) {
+    toastEl.textContent = text; toastEl.className = "toast" + (err ? " err" : ""); toastEl.hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { toastEl.hidden = true; }, err ? 6000 : 2600);
+  }
+  function api(path, body) {
+    return fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Mailpilot-Token": token },
+      body: JSON.stringify(body) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false, error: "Сервер не ответил" }; }); })
+      .then(function (data) { if (!data.ok) throw new Error(data.error || "Ошибка"); return data; })
+      .catch(function (e) {
+        toast(e.message === "Failed to fetch" ? "Нет связи с mailpilot serve. Запустите его снова." : e.message, true);
+        throw e;
+      });
+  }
+  function setLabel(tid, label) {
+    document.querySelectorAll('[data-thread="' + tid + '"] .mk, .marks[data-thread="' + tid + '"] .mk').forEach(function (b) {
+      b.classList.toggle("on", b.getAttribute("data-label") === label);
+    });
+    document.querySelectorAll('.card[data-thread="' + tid + '"]:not(.draft)').forEach(function (c) {
+      c.classList.remove("lbl-important", "lbl-not_important");
+      if (label) c.classList.add("lbl-" + label);
+      var r = c.querySelector(".reason");
+      if (r) { r.hidden = !label; r.dataset.kind = label || ""; if (label) r.querySelector("input").value = ""; }
+    });
+  }
+
+  document.addEventListener("click", function (e) {
+    // Важно / не важно (повторный клик снимает отметку)
+    var mk = e.target.closest(".mk");
+    if (mk) {
+      var tid = mk.closest("[data-thread]").getAttribute("data-thread");
+      var label = mk.classList.contains("on") ? "clear" : mk.getAttribute("data-label");
+      api("/api/mark", { thread_id: tid, label: label }).then(function () {
+        setLabel(tid, label === "clear" ? null : label);
+        toast(label === "clear" ? "Отметка снята" : label === "important" ? "Отмечено: важно" : "Отмечено: не важно. Такие письма не будут подниматься наверх");
+      });
+      return;
+    }
+    // Причина отметки
+    var sr = e.target.closest("[data-save-reason]");
+    if (sr) {
+      var box = sr.closest(".reason"), card = sr.closest("[data-thread]");
+      var kind = sr.getAttribute("data-kind") || box.dataset.kind;
+      api("/api/reason", { thread_id: card.getAttribute("data-thread"), kind: kind, reason: box.querySelector("input").value })
+        .then(function () { box.hidden = true; toast("Спасибо, учту"); });
+      return;
+    }
+    // Предложения правил
+    var sa = e.target.closest("[data-sug-act]");
+    if (sa) {
+      var item = sa.closest("[data-sug]"), act = sa.getAttribute("data-sug-act");
+      api("/api/suggestion", { id: item.getAttribute("data-sug"), action: act }).then(function () {
+        item.remove(); toast(act === "apply" ? "Правило добавлено, действует для новых писем" : "Больше не предложу");
+        var box = document.getElementById("suggestions"); if (box && !box.querySelector("[data-sug]")) box.remove();
+      });
+      return;
+    }
+    // Черновики
+    var da = e.target.closest("[data-draft-act]");
+    if (da) draftAction(da.closest(".draft"), da.getAttribute("data-draft-act"));
+  });
+
+  function draftText(card) {
+    var ta = card.querySelector(".draft-edit");
+    return ta.hidden ? card.querySelector(".quote").textContent : ta.value;
+  }
+  function finishDraft(card, text) {
+    card.querySelectorAll(".foot button").forEach(function (b) { b.disabled = true; });
+    card.style.opacity = ".6";
+    var pill = card.querySelector(".pill"); if (pill) pill.textContent = text;
+  }
+  function draftAction(card, act) {
+    var id = card.getAttribute("data-draft"), ta = card.querySelector(".draft-edit"), q = card.querySelector(".quote");
+    var saveBtn = card.querySelector('[data-draft-act="save"]');
+    if (act === "edit") {
+      var editing = ta.hidden; ta.hidden = !editing; q.hidden = editing; saveBtn.hidden = !editing;
+      if (editing) { ta.value = q.textContent; ta.focus(); }
+      return;
+    }
+    if (act === "save") {
+      api("/api/draft", { id: id, action: "save", text: ta.value }).then(function (d) {
+        q.textContent = d.text; ta.hidden = true; q.hidden = false; saveBtn.hidden = true; toast("Текст сохранён");
+      });
+      return;
+    }
+    if (act === "reject") {
+      api("/api/draft", { id: id, action: "reject" }).then(function () { finishDraft(card, "отклонён"); toast("Черновик отклонён"); });
+      return;
+    }
+    if (act === "no_reply") {
+      api("/api/draft", { id: id, action: "no_reply" }).then(function () {
+        finishDraft(card, "ответ не нужен"); card.style.opacity = "";
+        var r = card.querySelector(".reason"); r.hidden = false; r.querySelector("input").focus();
+        toast("Запомнил: на такие письма ответ не нужен");
+      });
+      return;
+    }
+    if (act === "send") confirmSend(card, id, draftText(card));
+  }
+
+  var dlg = document.getElementById("send-dlg"), pending = null;
+  function confirmSend(card, id, text) {
+    var sig = card.getAttribute("data-signature");
+    var full = sig && text.indexOf(sig) < 0 ? text.replace(/\s+$/, "") + "\n\n" + sig : text;
+    var copy = card.getAttribute("data-copy-list");
+    document.getElementById("send-to").textContent = "Кому: " + card.getAttribute("data-to") + (copy ? " · Копия: " + copy : "")
+      + " · Тема: Re: " + card.getAttribute("data-subject");
+    document.getElementById("send-text").textContent = full;
+    pending = { card: card, id: id, text: text };
+    if (dlg.showModal) dlg.showModal();
+    else if (window.confirm("Отправить этот ответ?\n\n" + full)) doSend();
+  }
+  function doSend() {
+    var p = pending; pending = null; if (!p) return;
+    var ok = document.getElementById("send-ok"); ok.disabled = true; ok.textContent = "Отправляю…";
+    api("/api/draft", { id: p.id, action: "send", text: p.text, confirm: true }).then(function (d) {
+      if (dlg.open) dlg.close();
+      finishDraft(p.card, "отправлен");
+      toast(d.warning ? "Отправлено, но не сохранилось в «Отправленных»: " + d.warning : "Отправлено", !!d.warning);
+    }).catch(function () { if (dlg.open) dlg.close(); }).finally(function () { ok.disabled = false; ok.textContent = "Отправить"; });
+  }
+  document.getElementById("send-ok").addEventListener("click", function (e) { e.preventDefault(); doSend(); });
+  document.getElementById("send-cancel").addEventListener("click", function (e) { e.preventDefault(); pending = null; dlg.close(); });
+})();
+</script>
+{% endif %}
 </body>
 </html>

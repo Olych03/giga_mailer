@@ -99,6 +99,20 @@ CREATE TABLE IF NOT EXISTS runs (
     info TEXT
 );
 
+-- Решения пользователя из сводки: важно / не важно / ответ не нужен
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY,
+    thread_id TEXT,
+    kind TEXT NOT NULL,
+    reason TEXT,
+    sender TEXT,
+    category TEXT,
+    subject TEXT,
+    subject_key TEXT,
+    created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_feedback_thread ON feedback(thread_id);
+
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT

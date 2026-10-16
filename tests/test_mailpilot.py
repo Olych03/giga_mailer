@@ -193,3 +193,136 @@ def test_vip_add_remove(demo):
     main(["--config", str(cfg.path), "vip", "add", "Павел Лебедев"])
     main(["--config", str(cfg.path), "vip", "remove", "Виктор Громов"])
     assert load_config(cfg.path).get("digest.vip_senders") == ["Павел Лебедев"]
+
+
+# --- дообучение по отметкам ------------------------------------------------------
+
+def _model(cfg):
+    from mailpilot.digest import build_digest
+    from mailpilot.textutil import iso, now_utc
+
+    store = Store(cfg.db_path)
+    m = build_digest(cfg, store, iso(now_utc() - timedelta(days=1)), iso(now_utc()))
+    store.close()
+    return m
+
+
+def _thread_id(cfg, prefix):
+    store = Store(cfg.db_path)
+    tid = next(t["id"] for t in store.query("SELECT * FROM threads") if (t["subject"] or "").startswith(prefix))
+    store.close()
+    return tid
+
+
+def test_marks_override_attention(demo):
+    from mailpilot import feedback as fb
+
+    cfg, _ = demo
+    release = _thread_id(cfg, "Окно релиза")
+    assert release in [i["id"] for i in _model(cfg)["attention"]]
+    store = Store(cfg.db_path)
+    fb.mark(store, release, "not_important", "это рассылка")
+    store.close()
+    m = _model(cfg)
+    assert release not in [i["id"] for i in m["attention"]]
+    assert m["marked_unimportant"] == 1
+    # «Важно» поднимает переписку даже из неважной категории
+    cfg.raw["categories"] = [dict(c, importance="low") if c["id"] == "routine" else c for c in cfg.raw["categories"]]
+    schema = _thread_id(cfg, "Схема интеграции")
+    assert schema not in [i["id"] for i in _model(cfg)["attention"]]
+    main(["--config", str(cfg.path), "mark", schema, "important"])
+    att = _model(cfg)["attention"]
+    assert att[0]["id"] == schema and "вы отметили как важное" in att[0]["why"]
+    # Повторная отметка заменяет прежнюю, clear снимает
+    main(["--config", str(cfg.path), "mark", release, "clear"])
+    store = Store(cfg.db_path)
+    assert release not in fb.labels(store)
+    store.close()
+
+
+def test_suggestions_from_repeated_marks(demo):
+    from mailpilot import feedback as fb
+
+    cfg, _ = demo
+    store = Store(cfg.db_path)
+    for prefix in ("Окно релиза", "Схема интеграции"):
+        fb.mark(store, _thread_id(cfg, prefix), "not_important")
+    store.db.execute("UPDATE feedback SET sender='digest@news.example.com'")
+    store.commit()
+    sugs = fb.suggestions(cfg, store)
+    assert [s["id"] for s in sugs] == ["low-from:digest@news.example.com"]
+    fb.apply_suggestion(cfg, store, "1")
+    assert fb.suggestions(cfg, store) == []
+    store.close()
+    cfg2 = load_config(cfg.path)
+    assert cfg2.categories[0].id == "deprioritized" and cfg2.categories[0].importance == "low"
+    msg = {"to_raw": "", "cc_raw": "", "from_raw": "digest@news.example.com", "subject": "x", "text": ""}
+    assert classify(cfg2, msg).id == "deprioritized"
+
+
+def test_no_reply_blocks_drafts_and_preferences_reach_agent(demo):
+    from mailpilot import analysis
+    from mailpilot import feedback as fb
+
+    cfg, _ = demo
+    schema = _thread_id(cfg, "Схема интеграции")
+    store = Store(cfg.db_path)
+    did = next(d["id"] for d in store.drafts(("proposed",)) if d["thread_id"] == schema)
+    store.close()
+    main(["--config", str(cfg.path), "draft", "no-reply", str(did), "--reason", "отвечу устно"])
+    fb.ensure_preferences(cfg)
+    cfg.preferences_path.write_text("# Мои правила\n\n- Письма про релизы Альфы не важны\n", encoding="utf-8")
+    store = Store(cfg.db_path)
+    assert store.draft(did)["status"] == "no_reply"
+    store.db.execute("UPDATE threads SET analyzed_upto=NULL")  # заставить разобрать заново
+    store.commit()
+    files = analysis.prepare(cfg, store)
+    store.close()
+    batch = json.loads(Path(files[0]).read_text(encoding="utf-8"))
+    entry = next(t for f in files for t in json.loads(Path(f).read_text(encoding="utf-8"))["threads"] if t["thread_id"] == schema)
+    assert entry["allow_draft"] is False
+    assert "релизы Альфы" in batch["my_preferences"]
+    assert batch["my_recent_decisions"][0]["decision"] == "ответ не нужен"
+    assert batch["my_recent_decisions"][0]["reason"] == "отвечу устно"
+
+
+def test_local_server_marks_and_sends_only_with_token_and_confirm(demo):
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from mailpilot.server import make_server
+
+    cfg, _ = demo
+    httpd, token = make_server(str(cfg.path), port=0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    def post(path, body, tok=token):
+        req = urllib.request.Request(base + path, data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json", "X-Mailpilot-Token": tok})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    try:
+        page = urllib.request.urlopen(base + "/").read().decode()
+        assert token in page and 'data-label="not_important"' in page and "Отправить…" in page
+        release = _thread_id(cfg, "Окно релиза")
+        assert post("/api/mark", {"thread_id": release, "label": "not_important"}, tok="wrong")[0] == 403
+        assert post("/api/mark", {"thread_id": release, "label": "not_important"}) == (200, {"ok": True, "thread_id": release, "label": "not_important"})
+        store = Store(cfg.db_path)
+        did = store.drafts(("proposed",))[0]["id"]
+        store.close()
+        code, data = post("/api/draft", {"id": did, "action": "send", "text": "Да."})
+        assert code == 400 and not (cfg.data_dir / "outbox.jsonl").exists()
+        code, data = post("/api/draft", {"id": did, "action": "send", "text": "Да, подтверждаю.", "confirm": True})
+        assert code == 200 and data["status"] == "sent"
+        sent = json.loads((cfg.data_dir / "outbox.jsonl").read_text(encoding="utf-8").splitlines()[0])
+        assert sent["text"].startswith("Да, подтверждаю.")
+        assert post("/api/draft", {"id": did, "action": "send", "text": "ещё раз", "confirm": True})[0] == 400
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

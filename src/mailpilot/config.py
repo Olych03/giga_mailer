@@ -87,6 +87,10 @@ class Config:
         return self.data_dir / "style.md"
 
     @property
+    def preferences_path(self) -> Path:
+        return self.data_dir / "preferences.md"
+
+    @property
     def overrides_path(self) -> Path:
         return self.data_dir / OVERRIDES_NAME
 
@@ -160,6 +164,13 @@ def _apply_overrides(raw: dict[str, Any], overrides: dict[str, Any]) -> dict[str
         raw["digest"] = digest
         current = list(digest.get("vip_senders") or []) + [v for v in extra_vip if v not in (digest.get("vip_senders") or [])]
         digest["vip_senders"] = [v for v in current if v.lower() not in removed]
+
+    # Отправители, на письма которых не нужно предлагать ответы (решения из сводки)
+    no_drafts = list(overrides.get("no_drafts_from") or [])
+    if no_drafts:
+        analysis = raw.setdefault("analysis", {}) or {}
+        raw["analysis"] = analysis
+        analysis["no_drafts_from"] = list(analysis.get("no_drafts_from") or []) + [a for a in no_drafts if a not in (analysis.get("no_drafts_from") or [])]
 
     # Пользовательские правила проверяются раньше правил категории
     for rule in overrides.get("rules") or []:

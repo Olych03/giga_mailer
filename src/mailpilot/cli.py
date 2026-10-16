@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from . import analysis
+from . import feedback as fb
 from .calendar_src import calendar_source, refresh_calendar
 from .config import (
     IMPORTANCE_LEVELS, Config, ConfigError, example_config_path, load_config, read_overrides, write_overrides,
 )
-from .digest import new_period, write_digest
+from .digest import new_period, rerender, write_digest
 from .fetch import fetch_new
 from .learn import learn_from_sent, write_style_request
 from .mail_source import MailError, make_source
@@ -117,14 +118,7 @@ def cmd_prepare(args: argparse.Namespace) -> None:
 
 
 def _rerender(cfg: Config, store: Store, open_browser: bool = False) -> Path:
-    last = store.last_run("digest")
-    if last:
-        return write_digest(cfg, store, last["period_from"], last["period_to"], open_browser)
-    period_from, period_to = new_period(cfg, store)
-    path = write_digest(cfg, store, period_from, period_to, open_browser)
-    store.add_run("digest", iso(now_utc()), period_from, period_to, str(path))
-    store.commit()
-    return path
+    return rerender(cfg, store, open_browser)
 
 
 def cmd_ingest(args: argparse.Namespace) -> None:
@@ -154,6 +148,9 @@ def cmd_status(args: argparse.Namespace) -> None:
     st["last_digest"] = last["output"] if last else None
     st["style_profile"] = str(cfg.style_path) if cfg.style_path.exists() else None
     st["style_request"] = str(cfg.work_dir / "style_request.json") if (cfg.work_dir / "style_request.json").exists() else None
+    st["preferences_file"] = str(cfg.preferences_path)
+    st["decisions"] = store.one("SELECT COUNT(*) AS n FROM feedback")["n"]
+    st["suggestions"] = [{"n": x["n"], "text": x["text"], "count": x["count"]} for x in fb.suggestions(cfg, store)]
     _print_json(st)
     store.close()
 
@@ -194,6 +191,10 @@ def cmd_draft(args: argparse.Namespace) -> None:
         store.update_draft(d["id"], status="rejected")
         store.commit()
         print(f"Черновик №{d['id']} отклонён.")
+    elif args.action == "no-reply":
+        fb.mark(store, d["thread_id"], "no_reply", args.reason)
+        print(f"Отмечено: на «{(store.thread(d['thread_id']) or {}).get('subject')}» ответ не нужен. "
+              "Похожие решения учитываются при следующих разборах.")
     store.close()
 
 
@@ -332,6 +333,77 @@ def cmd_demo(args: argparse.Namespace) -> None:
     print(f"Демо-сводка: {path}")
 
 
+def cmd_serve(args: argparse.Namespace) -> None:
+    from .server import serve
+
+    serve(args.config, port=args.port, open_browser=not args.no_open)
+
+
+MARK_KINDS = {"important": "important", "not-important": "not_important", "clear": "clear"}
+
+
+def cmd_mark(args: argparse.Namespace) -> None:
+    cfg = load_config(args.config)
+    store = _store(cfg)
+    try:
+        fb.mark(store, args.thread, MARK_KINDS[args.label], args.reason)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    t = store.thread(args.thread) or {}
+    print(f"«{t.get('subject')}»: " + ("отметка снята" if args.label == "clear" else fb.KIND_TITLES[MARK_KINDS[args.label]]))
+    _rerender(cfg, store)
+    store.close()
+
+
+def cmd_feedback(args: argparse.Namespace) -> None:
+    cfg = load_config(args.config)
+    store = _store(cfg)
+    rows = fb.decisions(store, args.limit)
+    if args.json:
+        _print_json({"preferences_file": str(cfg.preferences_path), "preferences": fb.read_preferences(cfg),
+                     "decisions": fb.decisions_for_agent(store, args.limit),
+                     "suggestions": fb.suggestions(cfg, store)})
+    elif not rows:
+        print("Отметок пока нет. Их ставят кнопками в сводке (`mailpilot serve`) или командой `mailpilot mark`.")
+    else:
+        for r in rows:
+            reason = f" — {r['reason']}" if r.get("reason") else ""
+            print(f"{r['created_at'][:10]}  {fb.KIND_TITLES.get(r['kind'], r['kind']):16} {r.get('subject') or ''}"
+                  f" ({r.get('sender') or '?'}){reason}")
+    store.close()
+
+
+def cmd_suggestions(args: argparse.Namespace) -> None:
+    cfg = load_config(args.config)
+    store = _store(cfg)
+    try:
+        if args.action == "apply":
+            sug = fb.apply_suggestion(cfg, store, args.n)
+            print(f"Правило добавлено: {sug['text']}. Действует для новых писем.")
+        elif args.action == "dismiss":
+            fb.dismiss_suggestion(cfg, store, args.n)
+            print("Больше не предлагать.")
+        else:
+            sugs = fb.suggestions(cfg, store)
+            if not sugs:
+                print("Предложений нет: они появляются, когда вы несколько раз отмечаете похожие письма.")
+            for x in sugs:
+                print(f"{x['n']}. {x['text']} (отметок: {x['count']}; например: {'; '.join(x['examples'][:2])})")
+            if sugs:
+                print("Принять: mailpilot suggestions apply N, отказаться: mailpilot suggestions dismiss N")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    store.close()
+
+
+def cmd_preferences(args: argparse.Namespace) -> None:
+    cfg = load_config(args.config)
+    fb.ensure_preferences(cfg)
+    print(cfg.preferences_path)
+    if args.show:
+        print(cfg.preferences_path.read_text(encoding="utf-8"))
+
+
 # --- разбор аргументов ---------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -364,10 +436,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("drafts", help="Показать черновики на согласование").set_defaults(func=cmd_drafts)
 
     s = sub.add_parser("draft", help="Действия с черновиком")
-    s.add_argument("action", choices=["show", "edit", "reject"])
+    s.add_argument("action", choices=["show", "edit", "reject", "no-reply"])
     s.add_argument("id", type=int)
     s.add_argument("--text", help="Новый текст черновика")
     s.add_argument("--file", help="Взять новый текст из файла")
+    s.add_argument("--reason", help="Почему ответ не нужен (для no-reply)")
     s.set_defaults(func=cmd_draft)
 
     s = sub.add_parser("send", help="Отправить черновик после подтверждения")
@@ -404,6 +477,31 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("action", choices=["list", "add", "remove"])
     s.add_argument("name", nargs="?", help="«Имя Фамилия», фамилия или адрес")
     s.set_defaults(func=cmd_vip)
+
+    s = sub.add_parser("serve", help="Открыть сводку с кнопками разметки и правки ответов (локальный сервер)")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--no-open", action="store_true", help="Не открывать браузер")
+    s.set_defaults(func=cmd_serve)
+
+    s = sub.add_parser("mark", help="Отметить переписку: важно, не важно или снять отметку")
+    s.add_argument("thread", help="id переписки (есть в пакетах и в mailpilot status)")
+    s.add_argument("label", choices=list(MARK_KINDS))
+    s.add_argument("--reason", help="Почему (агент учтёт)")
+    s.set_defaults(func=cmd_mark)
+
+    s = sub.add_parser("feedback", help="Ваши отметки и решения по письмам")
+    s.add_argument("--limit", type=int, default=50)
+    s.add_argument("--json", action="store_true", help="Для скилла: отметки, предпочтения и предложения")
+    s.set_defaults(func=cmd_feedback)
+
+    s = sub.add_parser("suggestions", help="Правила, предложенные по вашим отметкам")
+    s.add_argument("action", nargs="?", choices=["list", "apply", "dismiss"], default="list")
+    s.add_argument("n", nargs="?", help="Номер предложения")
+    s.set_defaults(func=cmd_suggestions)
+
+    s = sub.add_parser("preferences", help="Файл ваших правил для агента (создать, если нет)")
+    s.add_argument("--show", action="store_true")
+    s.set_defaults(func=cmd_preferences)
 
     s = sub.add_parser("demo", help="Собрать демо-сводку на выдуманных письмах")
     s.add_argument("--dir", default="demo", help="Папка для демо (по умолчанию ./demo)")
