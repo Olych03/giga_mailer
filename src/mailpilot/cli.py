@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import analysis
+from . import folders as fld
 from . import feedback as fb
 from .calendar_src import calendar_source, refresh_calendar
 from .config import (
@@ -103,6 +104,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     store.add_run("digest", iso(now_utc()), period_from, period_to, str(path), stats)
     store.commit()
     print(f"Новых писем: {stats['new']}. Сводка: {path}")
+    if stats.get("folders"):
+        print(f"Папок просмотрено: {stats['folders']}, новых писем в них: {stats['folder_new']}.")
     if batches:
         print(f"Пакетов на смысловой анализ: {len(batches)}. Откройте gigacode и запустите скилл mailpilot.")
     store.close()
@@ -239,6 +242,25 @@ def cmd_learn(args: argparse.Namespace) -> None:
     print(f"Пакет для профиля стиля: {path}")
     print("Откройте gigacode и попросите скилл mailpilot обновить профиль стиля.")
     store.close()
+
+
+def cmd_folders(args: argparse.Namespace) -> None:
+    """Все папки ящика и какие из них попадают в раздел «По папкам»."""
+    cfg = load_config(args.config)
+
+    async def go() -> Any:
+        async with make_source(cfg) as src:
+            return await src.list_mailboxes()
+
+    tree = asyncio.run(go())
+    chosen = set(fld.choose(cfg, tree))
+    if not fld.enabled(cfg):
+        print("Сводка по папкам выключена (folders.enabled: false).")
+    for box in fld.flatten(tree):
+        mark = "смотрю    " if box["name"] in chosen else "пропускаю "
+        attribs = " ".join(box["attribs"])
+        print(f"{mark} {box['name']}" + (f"  {attribs}" if attribs else ""))
+    print(f"\nВ сводке папок: {len(chosen)}. Выбрать вручную: folders.include / folders.exclude в config.yaml.")
 
 
 def cmd_categories(args: argparse.Namespace) -> None:
@@ -454,6 +476,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_learn)
 
     sub.add_parser("categories", help="Список категорий").set_defaults(func=cmd_categories)
+    sub.add_parser("folders", help="Папки ящика и какие из них идут в раздел «По папкам»").set_defaults(func=cmd_folders)
 
     s = sub.add_parser("importance", help="Изменить важность категории")
     s.add_argument("category")

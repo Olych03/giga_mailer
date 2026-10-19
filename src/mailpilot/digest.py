@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import webbrowser
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from . import feedback as fb
+from . import folders as fld
 from .analysis import analysis_status, days_ago, thread_timeline
 from .calendar_src import agenda_window, find_conflicts
 from .config import Config
@@ -153,6 +155,8 @@ def _sender_groups(cfg: Config, msgs: list[dict[str, Any]]) -> list[dict[str, An
 
 def build_digest(cfg: Config, store: Store, period_from: str, period_to: str) -> dict[str, Any]:
     msgs = store.messages_between(period_from, period_to)
+    folder_only = set(fld.scanned(store)) if not fld.in_main_digest(cfg) else set()
+    msgs = [m for m in msgs if m["mailbox"] not in folder_only]  # они в разделе «По папкам»
     incoming = [m for m in msgs if not m.get("is_mine")]
     carry_since = iso(parse_dt(period_to) - timedelta(days=int(cfg.get("digest.carry_over_days") or 5)))
     drafts_by_thread = {d["thread_id"]: d for d in store.drafts(("proposed",))}
@@ -239,6 +243,9 @@ def build_digest(cfg: Config, store: Store, period_from: str, period_to: str) ->
             {"time": e["start"].astimezone().strftime("%H:%M"), "end": e["end"].astimezone().strftime("%H:%M"),
              "subject": e["subject"], "location": e.get("location"), "conflict": e["uid"] in clash} for e in evs]})
 
+    # По папкам: где за последние сутки появились письма
+    folder_groups = folder_overview(cfg, store, period_to)
+
     # Карточки-счётчики сверху: что показывать, задаётся в digest.tiles
     escalations = [i for i in vip + attention if i["escalation"]]
     incidents = sorted({tag for i in items if not i["done"] for tag in i["incident_ids"]})
@@ -250,13 +257,19 @@ def build_digest(cfg: Config, store: Store, period_from: str, period_to: str) ->
         "escalations": (len(escalations), "attention", "переписки с эскалацией"),
         "incidents": (len(incidents), "attention", "открытые инциденты INC"),
         "calendar": (sum(len(d["events"]) for d in agenda[1:]), "calendar", agenda[1]["label"].lower() + " встреч" if len(agenda) > 1 else "встреч"),
+        "folders": (len(folder_groups), "folders", plural(sum(g["count"] for g in folder_groups), "письмо", "письма", "писем") + " в папках за сутки"),
     }
     tiles = []
-    for spec in cfg.get("digest.tiles") or DEFAULT_TILES:
+    tile_warnings = []
+    if cfg.get("tiles") is not None and cfg.get("digest.tiles") is None:
+        tile_warnings.append("список tiles стоит вне раздела digest, поэтому показаны карточки по умолчанию; "
+                             "сдвиньте его внутрь digest на два пробела")
+    for spec in normalize_tiles(cfg):
         kind = spec.get("type")
         if kind == "category":
             cat = cfg.category(spec.get("category"))
             if not cat:
+                tile_warnings.append(f"не показана карточка: нет категории «{spec.get('category')}»")
                 continue
             n = sum(1 for m in incoming if m.get("category") == cat.id)
             tiles.append({"title": spec.get("title") or cat.title, "value": n, "anchor": f"cat-{cat.id}",
@@ -265,6 +278,8 @@ def build_digest(cfg: Config, store: Store, period_from: str, period_to: str) ->
             n, anchor, hint = values[kind]
             tiles.append({"title": spec.get("title") or TILE_TITLES[kind], "value": n, "anchor": anchor,
                           "hint": hint, "tone": spec.get("tone") or TILE_TONES.get(kind, "neutral")})
+        else:
+            tile_warnings.append(f"не показана карточка: неизвестный тип «{kind}»")
 
     titles = {t["anchor"]: t["title"] for t in reversed(tiles)}
     # Порядок разделов постоянный: важные люди всегда в самом верху
@@ -284,6 +299,9 @@ def build_digest(cfg: Config, store: Store, period_from: str, period_to: str) ->
         "overview": overview,
         "drafts": drafts,
         "agenda": agenda,
+        "folders": folder_groups,
+        "folders_hours": fld.window_hours(cfg),
+        "tile_warnings": tile_warnings,
         "hidden_count": plural(hidden_count, "письмо", "письма", "писем") if hidden_count else None,
         "pending_analysis": status["threads_waiting"],
         "marked_unimportant": sum(1 for i in items if i["label"] == "not_important"),
@@ -293,16 +311,72 @@ def build_digest(cfg: Config, store: Store, period_from: str, period_to: str) ->
     }
 
 
+def normalize_tiles(cfg: Config) -> list[dict[str, Any]]:
+    """Карточки из digest.tiles. Сколько записей, столько и карточек.
+
+    Понимает и короткие записи: «- prom», «- {category: prom}», «- {type: prom}»,
+    а «- categories» разворачивает в карточку на каждую видимую категорию.
+    """
+    out = []
+    for spec in cfg.get("digest.tiles") or DEFAULT_TILES:
+        if isinstance(spec, str):
+            spec = {"type": spec}
+        if not isinstance(spec, dict):
+            continue
+        spec = dict(spec)
+        kind = spec.get("type")
+        if kind == "categories":
+            for cat in cfg.categories:
+                if cat.importance != "hidden":
+                    out.append({"type": "category", "category": cat.id, "tone": spec.get("tone")})
+            continue
+        if not kind and spec.get("category"):
+            spec["type"] = "category"
+        elif kind not in TILE_TITLES and kind != "category" and cfg.category(kind):
+            spec.update(type="category", category=kind)  # «type: prom» — это карточка категории
+        out.append(spec)
+    return out
+
+
+def folder_overview(cfg: Config, store: Store, period_to: str) -> list[dict[str, Any]]:
+    done = fld.summaries(store)
+    groups = []
+    for name, msgs in fld.folder_messages(cfg, store, period_to).items():
+        newest = msgs[0]["date"]
+        summ = done.get(name) or {}
+        senders: dict[str, int] = {}
+        for m in msgs:
+            who = pretty_person(cfg, m.get("from_raw") or "")
+            senders[who] = senders.get(who, 0) + 1
+        top = sorted(senders.items(), key=lambda kv: -kv[1])[:3]
+        groups.append({
+            "id": "f-" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:8],
+            "name": name,
+            "title": fld.leaf(name),
+            "count": len(msgs),
+            "line": plural(len(msgs), "письмо", "письма", "писем") + " · " + ", ".join(
+                f"{w} ({n})" if n > 1 else w for w, n in top),
+            "summary": summ.get("summary"),
+            "summary_stale": bool(summ) and summ.get("upto", "") < newest,
+            "entries": [{"time": _fmt(m["date"]), "who": pretty_person(cfg, m.get("from_raw") or ""),
+                         "subject": one_line(m.get("subject") or "(без темы)", 140),
+                         "gist": one_line(m.get("new_text") or "", 200)} for m in msgs[:15]],
+            "more": max(0, len(msgs) - 15),
+        })
+    groups.sort(key=lambda g: -g["count"])
+    return groups
+
+
 DEFAULT_TILES = [
     {"type": "new"}, {"type": "attention"}, {"type": "vip"}, {"type": "drafts"},
 ]
 TILE_TITLES = {
     "new": "Новые письма", "attention": "Требуют внимания", "vip": "От руководства", "drafts": "Ответы готовы",
-    "escalations": "Эскалации", "incidents": "Инциденты", "calendar": "Встречи",
+    "escalations": "Эскалации", "incidents": "Инциденты", "calendar": "Встречи", "folders": "По папкам",
 }
 TILE_TONES = {"new": "blue", "attention": "red", "vip": "violet", "drafts": "green", "escalations": "red",
-              "incidents": "amber", "calendar": "blue"}
-SECTION_ORDER = ["vip", "attention", "drafts", "calendar", "new"]
+              "incidents": "amber", "calendar": "blue", "folders": "neutral"}
+SECTION_ORDER = ["vip", "attention", "drafts", "calendar", "folders", "new"]
 
 
 def digest_paths(cfg: Config, period_to: str) -> tuple[Path, Path]:

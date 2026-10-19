@@ -153,7 +153,19 @@ class DemoMailSource:
         return {"imap": "demo", "smtp": "demo"}
 
     async def list_mailboxes(self) -> Any:
-        return {"mailboxes": ["INBOX", "Отправленные"]}
+        # Тот же вид, что у mcp-mail-server: дерево с признаками папок
+        def box(name: str, attribs: list[str] | None = None, children: dict[str, Any] | None = None,
+                selectable: bool = True) -> dict[str, Any]:
+            return {"name": name, "attribs": attribs or [], "delimiter": "/", "selectable": selectable,
+                    "children": children or {}}
+
+        return {
+            "INBOX": box("INBOX", children={"Рассылки": box("INBOX/Рассылки")}),
+            "Отправленные": box("Отправленные", ["\\Sent"]),
+            "Черновики": box("Черновики", ["\\Drafts"]),
+            "Удаленные": box("Удаленные", ["\\Trash"]),
+            "Проекты": box("Проекты", ["\\Noselect"], {"Альфа": box("Проекты/Альфа")}, selectable=False),
+        }
 
     async def search(self, mailboxes: list[str] | None, since: datetime, before: datetime, limit: int = 200) -> dict[str, Any]:
         found = [

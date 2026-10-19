@@ -13,12 +13,17 @@ from datetime import timedelta
 from typing import Any
 
 from . import feedback as fb
+from . import folders as fld
 from .config import Config
 from .learn import similar_examples
 from .store import Store
 from .textutil import display_name, iso, local, now_utc, one_line, parse_dt, truncate
 
 ANALYSIS_LOOKBACK_DAYS = 7
+FOLDERS_FILE = "folders.json"
+FOLDERS_RESULT = "folders_result.json"
+FOLDER_SUMMARY_HINT = ("1–3 предложения: о чём письма в папке, что важного, нужно ли что-то от меня. "
+                       "Если всё рутинное — так и скажи коротко")
 
 RESULT_SCHEMA = {
     "thread_id": "id цепочки из пакета (обязательно)",
@@ -70,8 +75,9 @@ def threads_to_analyze(cfg: Config, store: Store) -> list[dict[str, Any]]:
 def prepare(cfg: Config, store: Store) -> list[str]:
     work = cfg.work_dir
     work.mkdir(parents=True, exist_ok=True)
-    for old in list(work.glob("batch_*.json")) + list(work.glob("result_*.json")):
-        old.unlink()
+    for old in list(work.glob("batch_*.json")) + list(work.glob("result_*.json")) + [work / FOLDERS_FILE, work / FOLDERS_RESULT]:
+        if old.exists():
+            old.unlink()
 
     max_chars = int(cfg.get("analysis.max_message_chars") or 2500)
     max_full = int(cfg.get("analysis.max_full_messages") or 10)
@@ -156,6 +162,17 @@ def prepare(cfg: Config, store: Store) -> list[str]:
         p = work / f"batch_{n:02d}.json"
         p.write_text(json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8")
         files.append(str(p))
+    # Сводка по папкам: короткая суть по каждой папке с новыми письмами
+    folder_req = fld.request_for_agent(cfg, store, iso(now_utc()))
+    if folder_req:
+        (work / FOLDERS_FILE).write_text(json.dumps({
+            "result_file": str(work / FOLDERS_RESULT),
+            "me": me,
+            "my_preferences": preferences,
+            "result_schema": {"folders": [{"folder": "имя папки из запроса", "summary": FOLDER_SUMMARY_HINT}]},
+            "folders": folder_req,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        files.append(str(work / FOLDERS_FILE))
     store.set_kv("prepared_at", iso(now_utc()))
     store.set_kv("prepared_batches", str(len(files)))
     store.commit()
@@ -180,9 +197,11 @@ def ingest(cfg: Config, store: Store) -> dict[str, Any]:
     work = cfg.work_dir
     stats: dict[str, Any] = {"threads": 0, "drafts": 0, "missing": [], "errors": []}
     batches = sorted(work.glob("batch_*.json"))
-    if not batches:
-        return stats
     done_dir = work / "done" / now_utc().astimezone().strftime("%Y%m%d_%H%M%S")
+    _ingest_folders(store, work, done_dir, stats)
+    if not batches:
+        store.commit()
+        return stats
     for bpath in batches:
         batch = json.loads(bpath.read_text(encoding="utf-8"))
         rpath = work / f"result_{batch['batch']:02d}.json"
@@ -211,6 +230,36 @@ def ingest(cfg: Config, store: Store) -> dict[str, Any]:
         shutil.move(str(rpath), done_dir / rpath.name)
     store.commit()
     return stats
+
+
+def _ingest_folders(store: Store, work: Any, done_dir: Any, stats: dict[str, Any]) -> None:
+    req_path, res_path = work / FOLDERS_FILE, work / FOLDERS_RESULT
+    if not req_path.exists():
+        return
+    if not res_path.exists():
+        stats["missing"].append(FOLDERS_RESULT)
+        return
+    try:
+        result = _load_json_lenient(res_path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        stats["errors"].append(f"{FOLDERS_RESULT}: не JSON ({exc})")
+        return
+    req = {f["folder"]: f for f in json.loads(req_path.read_text(encoding="utf-8"))["folders"]}
+    items = result.get("folders") if isinstance(result, dict) else result
+    saved = fld.summaries(store)
+    stats["folders"] = 0
+    for item in items or []:
+        name = item.get("folder")
+        if name not in req:
+            stats["errors"].append(f"{FOLDERS_RESULT}: неизвестная папка {name}")
+            continue
+        if (item.get("summary") or "").strip():
+            saved[name] = {"summary": item["summary"].strip(), "upto": req[name]["upto"], "at": iso(now_utc())}
+            stats["folders"] += 1
+    fld.save_summaries(store, saved)
+    done_dir.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(req_path), done_dir / req_path.name)
+    shutil.move(str(res_path), done_dir / res_path.name)
 
 
 def _apply_result(store: Store, item: dict[str, Any], meta: dict[str, Any]) -> None:
@@ -252,7 +301,9 @@ def _make_draft(store: Store, tid: str, item: dict[str, Any]) -> bool:
 
 def analysis_status(cfg: Config, store: Store) -> dict[str, Any]:
     pending = sorted(cfg.work_dir.glob("batch_*.json")) if cfg.work_dir.exists() else []
+    folders_file = cfg.work_dir / FOLDERS_FILE
     return {
+        "folders_file": str(folders_file) if folders_file.exists() else None,
         "pending_batches": len(pending),
         "prepared_at": store.get_kv("prepared_at"),
         "threads_waiting": len(threads_to_analyze(cfg, store)),

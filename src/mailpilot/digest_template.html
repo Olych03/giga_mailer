@@ -120,6 +120,8 @@ details > summary::-webkit-details-marker { display: none; }
 .row { padding: 7px 0; border-top: 1px solid var(--line); font-size: 14px; }
 .row .sub { color: var(--muted); font-size: 12.5px; }
 .row a { color: var(--blue); text-decoration: none; }
+.sec-note.tile-warn { color: var(--red); margin: 0 0 8px; }
+.sec-note { color: var(--muted); font-size: 13px; margin: -4px 0 12px; }
 .why { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
 .card.lbl-not_important { opacity: .55; }
 .card.lbl-not_important:hover { opacity: .85; }
@@ -173,6 +175,7 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
   <div class="num">{{ t.value }}</div><div class="name">{{ t.title }}</div><div class="hint">{{ t.hint }}</div><div class="go">подробнее ↓</div>
 </a>{% endfor %}
 </nav>
+{% if tile_warnings %}<div class="sec-note tile-warn">Карточки в config.yaml (digest.tiles): {{ tile_warnings|join("; ") }}.</div>{% endif %}
 {% if suggestions %}<div class="sug" id="suggestions">
   <h3>Предложения по вашим отметкам</h3>
   {% for x in suggestions %}<div class="item" data-sug="{{ x.id }}"><div class="txt">{{ x.text }}?
@@ -244,6 +247,20 @@ footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
       <span>{{ e.subject }}{% if e.location %}<br><span class="loc">{{ e.location }}</span>{% endif %}</span></div>
     {% else %}<div class="ev"><span class="t">—</span><span class="loc">встреч нет</span></div>{% endfor %}
   </div>{% endfor %}</div></details></section>
+
+{% elif sec == "folders" and folders %}
+<section id="folders" class="neutral"><details class="sec"><summary><h2>{{ section_titles.folders }} <span class="count">{{ folders|length }}</span><span class="chev" aria-hidden="true"></span></h2></summary>
+  <p class="sec-note">Папки, где за последние {{ folders_hours }} ч появились письма.</p>
+  {% for g in folders %}<div class="card folder" id="{{ g.id }}" style="--cat: var(--line)">
+    <div class="top"><div><div class="subject">{{ g.title }}</div>{% if g.title != g.name %}<div class="meta">{{ g.name }}</div>{% endif %}</div><span class="pill neutral">{{ g.count }}</span></div>
+    <div class="meta">{{ g.line }}</div>
+    {% if g.summary %}<p class="summary">{{ g.summary }}</p>{% if g.summary_stale %}<div class="why">После разбора пришли новые письма, суть обновится при следующем разборе.</div>{% endif %}
+    {% else %}<div class="why">Суть появится после разбора почты агентом.</div>{% endif %}
+    <details class="list"><summary>Письма</summary>
+      {% for e in g.entries %}<div class="row">{{ e.subject }} <span class="sub">· {{ e.who }}, {{ e.time }}</span>{% if e.gist %}<div class="sub">{{ e.gist }}</div>{% endif %}</div>{% endfor %}
+      {% if g.more %}<div class="row sub">…и ещё {{ g.more }}</div>{% endif %}
+    </details>
+  </div>{% endfor %}</details></section>
 
 {% elif sec == "new" %}
 <section id="new" class="blue"><details class="sec"><summary><h2>{{ section_titles.new }}<span class="chev" aria-hidden="true"></span></h2></summary>
