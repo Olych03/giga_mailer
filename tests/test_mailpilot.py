@@ -326,3 +326,90 @@ def test_local_server_marks_and_sends_only_with_token_and_confirm(demo):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_tiles_any_count_shorthand_and_warnings(demo):
+    cfg, _ = demo
+    cfg.raw["digest"]["tiles"] = ["new", "attention", "vip", "drafts", "folders", "prom",
+                                  {"category": "jira", "title": "Задачи"}, {"type": "calendar"}, "nonsense"]
+    m = _model(cfg)
+    titles = [t["title"] for t in m["tiles"]]
+    assert len(titles) == 8
+    assert titles[4:7] == ["По папкам", "Обращения с ПРОМ", "Задачи"]
+    assert m["tile_warnings"] == ["не показана карточка: неизвестный тип «nonsense»"]
+
+    cfg.raw["digest"]["tiles"] = ["categories"]
+    visible = [c.id for c in cfg.categories if c.importance != "hidden"]
+    assert [t["anchor"] for t in _model(cfg)["tiles"]] == [f"cat-{c}" for c in visible]
+
+    # Частая ошибка: tiles без отступа, на верхнем уровне
+    cfg.raw["tiles"] = cfg.raw["digest"].pop("tiles")
+    m = _model(cfg)
+    assert len(m["tiles"]) == 4 and "вне раздела digest" in m["tile_warnings"][0]
+
+
+def test_choose_folders_skips_service_ones(demo):
+    from mailpilot import folders as fld
+
+    cfg, _ = demo
+    tree = {
+        "INBOX": {"name": "INBOX", "attribs": [], "delimiter": "/", "children": {
+            "Рассылки": {"name": "INBOX/Рассылки", "attribs": []}}},
+        "Отправленные": {"name": "Отправленные", "attribs": ["\\Sent"]},
+        "Sent Items": {"name": "Sent Items", "attribs": []},
+        "Календарь": {"name": "Календарь", "attribs": []},
+        "Нежелательная почта": {"name": "Нежелательная почта", "attribs": []},
+        "Проекты": {"name": "Проекты", "selectable": False, "children": {"Альфа": {"name": "Проекты/Альфа"}}},
+    }
+    assert fld.choose(cfg, tree) == ["INBOX/Рассылки", "Проекты/Альфа"]
+    cfg.raw["folders"]["exclude"] = ["Рассылки"]
+    assert fld.choose(cfg, tree) == ["Проекты/Альфа"]
+    cfg.raw["folders"]["include"] = ["Календарь"]
+    assert fld.choose(cfg, tree) == ["Календарь"]
+    assert fld.choose(cfg, {"mailboxes": ["INBOX", "Архив"]}) == []  # include сильнее автоматического выбора
+
+
+def test_folders_section_separate_from_main_digest(demo):
+    cfg, path = demo
+    html = Path(path).read_text(encoding="utf-8")
+    sec = html[html.index('id="folders"'):html.index('id="new"')]
+    assert "Проекты/Альфа" in sec and "Стенд НТ Системы Альфа переезжает" in sec
+    assert "черновик плана на квартал" not in sec  # старше суток
+    # Письма из папок не попадают в цепочки и в обзор новых писем
+    assert "Опрос вовлечённости" not in html[html.index('id="new"'):]
+    store = Store(cfg.db_path)
+    rows = store.query("SELECT thread_id FROM messages WHERE mailbox IN ('Проекты/Альфа', 'INBOX/Рассылки')")
+    store.close()
+    assert rows and all(r["thread_id"] == "" for r in rows)
+    groups = {g["name"]: g for g in _model(cfg)["folders"]}
+    assert groups["Проекты/Альфа"]["count"] == 2 and not groups["Проекты/Альфа"]["summary_stale"]
+
+
+def test_folder_summary_round_trip(demo):
+    from mailpilot import folders as fld
+    from mailpilot.analysis import ingest, prepare
+    from mailpilot.textutil import iso, now_utc
+
+    cfg, _ = demo
+    store = Store(cfg.db_path)
+    work = cfg.work_dir
+    # Суть уже есть по всем папкам: новый запрос не нужен
+    prepare(cfg, store)
+    assert not (work / "folders.json").exists()
+    # Пришло новое письмо в папку: суть устарела, агенту уходит запрос только по этой папке
+    store.insert_message({"mailbox": "Проекты/Альфа", "uid_validity": 4, "uid": 999, "subject": "Альфа: стенд вернули",
+                          "from_raw": "a@example.com", "date": iso(now_utc() - timedelta(minutes=5)),
+                          "new_text": "Стенд снова доступен.", "is_mine": 0, "thread_id": ""})
+    store.commit()
+    assert _model(cfg)["folders"][0]["summary_stale"] is True
+    prepare(cfg, store)
+    req = json.loads((work / "folders.json").read_text(encoding="utf-8"))
+    assert [f["folder"] for f in req["folders"]] == ["Проекты/Альфа"]
+    assert req["folders"][0]["messages"][0]["subject"] == "Альфа: стенд вернули"
+    Path(req["result_file"]).write_text(json.dumps({"folders": [
+        {"folder": "Проекты/Альфа", "summary": "Стенд вернули."}, {"folder": "Чужая", "summary": "x"}]}), encoding="utf-8")
+    stats = ingest(cfg, store)
+    assert stats["folders"] == 1 and any("Чужая" in e for e in stats["errors"])
+    assert fld.summaries(store)["Проекты/Альфа"]["summary"] == "Стенд вернули."
+    assert not (work / "folders.json").exists()
+    store.close()

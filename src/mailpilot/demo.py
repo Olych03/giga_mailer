@@ -56,7 +56,8 @@ def _ics(uid: str, start: datetime, end: datetime, summary: str, organizer: str,
 def demo_messages(now: datetime | None = None) -> list[dict[str, Any]]:
     now = (now or now_utc()).astimezone()
     msgs: list[dict[str, Any]] = []
-    uid = {"INBOX": 100, "Отправленные": 500}
+    uid = {"INBOX": 100, "Отправленные": 500, "INBOX/Рассылки": 700, "Проекты/Альфа": 900}
+    uidv = {"INBOX": 1, "Отправленные": 2, "INBOX/Рассылки": 3, "Проекты/Альфа": 4}
 
     def add(box: str, ago: timedelta, frm: str, to: str, subject: str, text: str, cc: str = "",
             mid: str | None = None, reply_to: str | None = None, refs: list[str] | None = None,
@@ -64,7 +65,7 @@ def demo_messages(now: datetime | None = None) -> list[dict[str, Any]]:
         uid[box] += 1
         message_id = mid or f"<demo-{box}-{uid[box]}@example.com>"
         msgs.append({
-            "uid": uid[box], "uidValidity": 1 if box == "INBOX" else 2, "sourceMailbox": box,
+            "uid": uid[box], "uidValidity": uidv[box], "sourceMailbox": box,
             "date": iso(now - ago), "subject": subject, "from": frm, "to": to, "cc": cc, "text": text,
             "messageId": message_id, "inReplyTo": reply_to, "references": refs or ([reply_to] if reply_to else []),
             "attachments": attachments or [],
@@ -175,6 +176,18 @@ def demo_messages(now: datetime | None = None) -> list[dict[str, Any]]:
         add("INBOX", (8 - n) * h, who, ME, subj, "Приглашение на встречу.",
             attachments=[{"index": 0, "filename": f"invite{n}.ics", "contentType": "text/calendar", "size": len(body), "_content": body}])
 
+    # --- Письма, которые правила Outlook разложили по папкам ------------------------------------------
+    add("Проекты/Альфа", 3 * h, ZAKHAROV, ME, "Альфа: перенос стенда нагрузочного тестирования",
+        "Коллеги, стенд НТ переезжает в новый ЦОД в субботу. В пятницу после 18:00 стенд будет недоступен.")
+    add("Проекты/Альфа", 9 * h, NIKITINA, ME, "Альфа: протокол встречи по релизу",
+        "Итоги: релиз в четверг, ответственные за откат назначены, чек-лист в Confluence.")
+    add("Проекты/Альфа", 2 * d + 4 * h, ZAKHAROV, ME, "Альфа: черновик плана на квартал",
+        "Старое письмо, в сводку за сутки не попадает.")
+    add("INBOX/Рассылки", 4 * h, "news@example.com", ME, "Дайджест ИТ-новостей банка",
+        "Новая политика паролей с 1 ноября, переезд сервиса заявок, итоги хакатона.")
+    add("INBOX/Рассылки", 12 * h, "hr@example.com", ME, "Опрос вовлечённости до пятницы",
+        "Пройдите опрос до пятницы, это займёт 10 минут.")
+
     # --- Старые ответы в «Отправленных»: на них учится стиль --------------------------------------------
     old = [
         ("Встреча по релизу", "Подтвердите участие во встрече по релизу в среду в 11:00.", "Анна, добрый день! Да, буду.\n\nОльга"),
@@ -194,6 +207,12 @@ DEMO_STYLE = """# Профиль стиля (демо)
 - Подтверждения: «Да, буду», «Подтверждаю …».
 - Подпись: «Ольга» на отдельной строке.
 """
+
+DEMO_FOLDER_RESULTS = {
+    "Проекты/Альфа": "Стенд НТ Системы Альфа переезжает в субботу и будет недоступен с пятницы 18:00. "
+                     "По релизу в четверг протокол готов, ответственные за откат назначены.",
+    "INBOX/Рассылки": "С 1 ноября новая политика паролей; HR просит пройти опрос вовлечённости до пятницы.",
+}
 
 DEMO_RESULTS = {
     "INC0012345": {
@@ -260,6 +279,12 @@ def write_demo_results(work_dir: Path) -> None:
                     results.append({"thread_id": t["thread_id"], **res})
                     break
         Path(batch["result_file"]).write_text(json.dumps({"threads": results}, ensure_ascii=False, indent=2), encoding="utf-8")
+    fpath = work_dir / "folders.json"
+    if fpath.exists():
+        req = json.loads(fpath.read_text(encoding="utf-8"))
+        out = [{"folder": f["folder"], "summary": DEMO_FOLDER_RESULTS[f["folder"]]}
+               for f in req["folders"] if f["folder"] in DEMO_FOLDER_RESULTS]
+        Path(req["result_file"]).write_text(json.dumps({"folders": out}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def run_demo(directory: Path, with_analysis: bool = True, open_browser: bool = False) -> Path:

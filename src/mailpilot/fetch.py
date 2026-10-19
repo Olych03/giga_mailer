@@ -6,12 +6,14 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
+from . import folders as fld
 from .calendar_src import load_ics_files
 from .config import Config
 from .mail_source import MailError, search_all
 from .rules import classify
 from .store import Store
 from .textutil import html_to_text, iso, normalize_subject, now_utc, parse_addresses, parse_dt, split_quote
+from .threads import NO_THREAD
 
 OVERLAP = timedelta(minutes=15)
 
@@ -81,15 +83,9 @@ def mailboxes_to_search(cfg: Config) -> list[str] | None:
     return list(dict.fromkeys(boxes))
 
 
-async def fetch_new(cfg: Config, store: Store, src: Any, since: datetime | None = None,
-                    until: datetime | None = None) -> dict[str, int]:
-    until = until or now_utc()
-    if since is None:
-        wm = store.get_kv("fetch_watermark")
-        since = parse_dt(wm) - OVERLAP if wm else until - timedelta(hours=int(cfg.get("fetch.initial_hours") or 24))
+async def _store_found(cfg: Config, store: Store, src: Any, summaries: list[dict[str, Any]],
+                       stats: dict[str, int], folder_only: bool = False) -> None:
     sent_mailbox = cfg.get("mailboxes.sent")
-
-    summaries = await search_all(src, mailboxes_to_search(cfg), since, until)
     groups: dict[tuple[str, int | None], list[int]] = defaultdict(list)
     for s in summaries:
         key = (s.get("sourceMailbox") or "INBOX", s.get("uidValidity"))
@@ -98,15 +94,18 @@ async def fetch_new(cfg: Config, store: Store, src: Any, since: datetime | None 
             groups[key].append(uid)
 
     batch = int(cfg.get("fetch.batch_size") or 20)
-    stats = {"found": len(summaries), "new": 0, "events": 0}
     for (mailbox, uidv), uids in groups.items():
         for i in range(0, len(uids), batch):
             for raw in await _get_batch(src, mailbox, uids[i : i + batch], uidv):
                 raw.setdefault("sourceMailbox", mailbox)
                 m = normalize(cfg, raw, sent_mailbox)
                 m["category"] = classify(cfg, m).id
+                if folder_only:
+                    m["thread_id"] = NO_THREAD  # только для раздела «По папкам», в цепочки не идёт
                 if store.insert_message(m):
                     stats["new"] += 1
+                    if folder_only:
+                        stats["folder_new"] += 1
                 for idx, att in enumerate(m["attachments"]):
                     if _is_calendar(att):
                         target = cfg.data_dir / "attachments" / f"{m['uid_validity']}_{m['uid']}"
@@ -116,6 +115,28 @@ async def fetch_new(cfg: Config, store: Store, src: Any, since: datetime | None 
                         except MailError as exc:
                             print(f"  Не удалось сохранить приглашение из письма «{m['subject']}»: {exc}")
         store.commit()
+
+
+async def fetch_new(cfg: Config, store: Store, src: Any, since: datetime | None = None,
+                    until: datetime | None = None) -> dict[str, int]:
+    until = until or now_utc()
+    if since is None:
+        wm = store.get_kv("fetch_watermark")
+        since = parse_dt(wm) - OVERLAP if wm else until - timedelta(hours=int(cfg.get("fetch.initial_hours") or 24))
+
+    summaries = await search_all(src, mailboxes_to_search(cfg), since, until)
+    stats = {"found": len(summaries), "new": 0, "events": 0, "folder_new": 0, "folders": 0}
+    await _store_found(cfg, store, src, summaries, stats)
+
+    # Остальные папки ящика: всегда последние folders.hours часов, уже забранные письма пропускаются
+    if fld.enabled(cfg):
+        names = await fld.discover(cfg, store, src)
+        stats["folders"] = len(names)
+        if names:
+            fsince = min(since, until - timedelta(hours=fld.window_hours(cfg)))
+            found = await search_all(src, names, fsince, until)
+            stats["found"] += len(found)
+            await _store_found(cfg, store, src, found, stats, folder_only=not fld.in_main_digest(cfg))
 
     store.set_kv("fetch_watermark", iso(until))
     store.commit()
